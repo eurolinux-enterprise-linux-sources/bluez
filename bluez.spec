@@ -1,7 +1,7 @@
 Summary: Bluetooth utilities
 Name: bluez
 Version: 5.44
-Release: 5%{?dist}
+Release: 4%{?dist}
 License: GPLv2+
 Group: Applications/System
 URL: http://www.bluez.org/
@@ -17,9 +17,7 @@ Patch4: 0001-obex-Use-GLib-helper-function-to-manipulate-paths.patch
 Patch5: 0002-autopair-Don-t-handle-the-iCade.patch
 Patch7: 0004-agent-Assert-possible-infinite-loop.patch
 Patch8: 0001-Out-of-bounds-heap-read-in-service_search_attr_req-f.patch
-#Upstream 
-Patch9: 0001-device-Fix-crashing-when-connecting-ATT-over-BR-EDR.patch
-Patch10: 0002-device-Fix-crash-when-connecting-ATT-with-BR-EDR-onl.patch
+
 %global _hardened_build 1
 
 BuildRequires: git
@@ -254,18 +252,13 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 /lib/udev/rules.d/97-hid2hci.rules
 
 %changelog
-
-* Thu Apr 25 2019 Gopal Tiwari <gtiwari@redhat.com> 5.44-5
-- fixing crash with SIGSEGV when pairing with headset
-Resolves: #1667100
-
 * Mon Sep 11 2017 Don Zickus <dzickus@redhat.com> 5.44-4
 - forgot to bump rev
-Resolves: #1490011
+Resolves: #1490010
 
 * Mon Sep 11 2017 Don Zickus <dzickus@redhat.com> 5.44-3
 - sdpd heap fix
-Resolves: #1490011
+Resolves: #1490010
 
 * Mon Mar 27 2017 David Arcari <darcari@redhat.com> 5.44-2
 - added missing updates for sources and .gitignore
