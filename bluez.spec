@@ -1,7 +1,7 @@
 Summary: Bluetooth utilities
 Name: bluez
 Version: 4.66
-Release: 1%{?dist}
+Release: 2%{?dist}
 License: GPLv2+
 Group: Applications/System
 Source: http://www.kernel.org/pub/linux/bluetooth/%{name}-%{version}.tar.gz
@@ -21,6 +21,7 @@ Patch2: bluez-try-utf8-harder.patch
 Patch4: bluez-socket-mobile-cf-connection-kit.patch
 # http://thread.gmane.org/gmane.linux.bluez.kernel/2396
 Patch5: 0001-Add-sixaxis-cable-pairing-plugin.patch
+Patch6: 0001-Out-of-bounds-heap-read-in-service_search_attr_req-f.patch
 
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 URL: http://www.bluez.org/
@@ -134,6 +135,7 @@ This includes hidd, dund and pand.
 %patch2 -p1 -b .non-utf8-name
 %patch4 -p1 -b .socket-mobile
 %patch5 -p1 -b .cable-pairing
+%patch6 -p1 
 
 %build
 libtoolize -f -c
@@ -281,6 +283,10 @@ fi
 %{_mandir}/man1/pand.1.gz
 
 %changelog
+* Mon Sep 11 2017 Don Zickus <dzickus@redhat.com> 4.66-2
+- sdpd heap fixes
+Resolves: #1490008
+
 * Wed Jun 30 2010 Bastien Nocera <bnocera@redhat.com> 4.66-1
 - Update to 4.66
 - Update cable pairing patch
