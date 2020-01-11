@@ -1,7 +1,7 @@
 Summary: Bluetooth utilities
 Name: bluez
-Version: 5.23
-Release: 4%{?dist}
+Version: 5.41
+Release: 1%{?dist}
 License: GPLv2+
 Group: Applications/System
 URL: http://www.bluez.org/
@@ -16,6 +16,7 @@ Patch3: 0001-Allow-using-obexd-without-systemd-in-the-user-sessio.patch
 Patch4: 0001-obex-Use-GLib-helper-function-to-manipulate-paths.patch
 Patch5: 0002-autopair-Don-t-handle-the-iCade.patch
 Patch7: 0004-agent-Assert-possible-infinite-loop.patch
+Patch8: 0001-Remove-experimental-flag-for-BLE.patch
 
 %global _hardened_build 1
 
@@ -63,6 +64,7 @@ Utilities for use in Bluetooth applications:
 	- hcidump
 	- l2test
 	- rctest
+	- gatttool
 	- start scripts (Red Hat)
 	- pcmcia configuration files
 
@@ -142,6 +144,11 @@ make %{?_smp_mflags} V=1
 %install
 make install DESTDIR=$RPM_BUILD_ROOT
 
+# "make install" fails to install gatttool, necessary for Bluetooth Low Energy
+# Red Hat Bugzilla bug #1141909
+# Debian bug #720486
+install -m0755 attrib/gatttool $RPM_BUILD_ROOT%{_bindir}
+
 # Remove autocrap and libtool droppings
 find $RPM_BUILD_ROOT -name '*.la' -delete
 
@@ -157,6 +164,10 @@ install -D -p -m0644 tools/hid2hci.rules ${RPM_BUILD_ROOT}/lib/udev/rules.d/97-h
 install -d -m0755 $RPM_BUILD_ROOT/%{_localstatedir}/lib/bluetooth
 
 mkdir -p $RPM_BUILD_ROOT/%{_libdir}/bluetooth/
+
+#copy bluetooth config file
+install -D -p -m0644 src/main.conf ${RPM_BUILD_ROOT}/etc/bluetooth/main.conf
+sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM_BUILD_ROOT}/%{_sysconfdir}/bluetooth/main.conf
 
 %post libs -p /sbin/ldconfig
 
@@ -189,7 +200,9 @@ mkdir -p $RPM_BUILD_ROOT/%{_libdir}/bluetooth/
 %{_bindir}/hciconfig
 %{_bindir}/hcidump
 %{_bindir}/l2test
+%{_bindir}/hex2hcd
 %{_bindir}/mpris-proxy
+%{_bindir}/gatttool
 %{_bindir}/rctest
 %{_mandir}/man1/ciptool.1.gz
 %{_mandir}/man1/hcitool.1.gz
@@ -212,6 +225,7 @@ mkdir -p $RPM_BUILD_ROOT/%{_libdir}/bluetooth/
 %{_datadir}/dbus-1/services/org.bluez.obex.service
 %{_unitdir}/bluetooth.service
 %{_userunitdir}/obex.service
+%config %{_sysconfdir}/bluetooth/main.conf
 
 %files libs
 %doc COPYING
@@ -232,6 +246,16 @@ mkdir -p $RPM_BUILD_ROOT/%{_libdir}/bluetooth/
 /lib/udev/rules.d/97-hid2hci.rules
 
 %changelog
+* Fri Aug 5 2016 Don Zickus <dzickus@redhat.com> 5.41-1
+- Update to 5.41
+- obexd fixes to prevent crashes
+- add /etc/bluetooth/main.conf config file
+Resolves: #1313363, #1336476, #1338895
+
+* Wed May 18 2016 Don Zickus <dzickus@redhat.com> 5.39-1
+- Update to 5.39
+Resolves: #1263638 #1296616
+
 * Fri Jul 10 2015 Bastien Nocera <bnocera@redhat.com> 5.23-4
 - Build with --enable-fpie as well
 Resolves: #1174545

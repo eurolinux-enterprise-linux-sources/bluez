@@ -36,10 +36,11 @@
 #include <inttypes.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/socket.h>
 
-#include <bluetooth/bluetooth.h>
-#include <bluetooth/hci.h>
-#include <bluetooth/hci_lib.h>
+#include "lib/bluetooth.h"
+#include "lib/hci.h"
+#include "lib/hci_lib.h"
 
 #include "src/shared/util.h"
 #include "src/shared/btsnoop.h"
@@ -52,6 +53,8 @@
 #include "l2cap.h"
 #include "control.h"
 #include "vendor.h"
+#include "intel.h"
+#include "broadcom.h"
 #include "packet.h"
 
 #define COLOR_INDEX_LABEL		COLOR_WHITE
@@ -59,6 +62,10 @@
 
 #define COLOR_NEW_INDEX			COLOR_GREEN
 #define COLOR_DEL_INDEX			COLOR_RED
+#define COLOR_OPEN_INDEX		COLOR_GREEN
+#define COLOR_CLOSE_INDEX		COLOR_RED
+#define COLOR_INDEX_INFO		COLOR_GREEN
+#define COLOR_VENDOR_DIAG		COLOR_YELLOW
 
 #define COLOR_HCI_COMMAND		COLOR_BLUE
 #define COLOR_HCI_COMMAND_UNKNOWN	COLOR_WHITE_BG
@@ -80,10 +87,13 @@
 #define COLOR_PHY_PACKET		COLOR_BLUE
 
 static time_t time_offset = ((time_t) -1);
+static int priority_level = BTSNOOP_PRIORITY_INFO;
 static unsigned long filter_mask = 0;
 static bool index_filter = false;
 static uint16_t index_number = 0;
 static uint16_t index_current = 0;
+
+#define UNKNOWN_MANUFACTURER 0xffff
 
 #define MAX_CONN 16
 
@@ -150,6 +160,17 @@ void packet_del_filter(unsigned long filter)
 	filter_mask &= ~filter;
 }
 
+void packet_set_priority(const char *priority)
+{
+	if (!priority)
+		return;
+
+	if (!strcasecmp(priority, "debug"))
+		priority_level = BTSNOOP_PRIORITY_DEBUG;
+	else
+		priority_level = atoi(priority);
+}
+
 void packet_select_index(uint16_t index)
 {
 	filter_mask &= ~PACKET_FILTER_SHOW_INDEX;
@@ -160,7 +181,8 @@ void packet_select_index(uint16_t index)
 
 #define print_space(x) printf("%*c", (x), ' ');
 
-static void print_packet(struct timeval *tv, uint16_t index, char ident,
+static void print_packet(struct timeval *tv, struct ucred *cred,
+					uint16_t index, char ident,
 					const char *color, const char *label,
 					const char *text, const char *extra)
 {
@@ -168,7 +190,8 @@ static void print_packet(struct timeval *tv, uint16_t index, char ident,
 	char line[256], ts_str[64];
 	int n, ts_len = 0, ts_pos = 0, len = 0, pos = 0;
 
-	if (filter_mask & PACKET_FILTER_SHOW_INDEX) {
+	if ((filter_mask & PACKET_FILTER_SHOW_INDEX) &&
+					index != HCI_DEV_NONE) {
 		if (use_color()) {
 			n = sprintf(ts_str + ts_pos, "%s", COLOR_INDEX_LABEL);
 			if (n > 0)
@@ -234,7 +257,7 @@ static void print_packet(struct timeval *tv, uint16_t index, char ident,
 			pos += n;
 	}
 
-	n = sprintf(line + pos, "%c %s", ident, label);
+	n = sprintf(line + pos, "%c %s", ident, label ? label : "");
 	if (n > 0) {
 		pos += n;
 		len += n;
@@ -244,7 +267,8 @@ static void print_packet(struct timeval *tv, uint16_t index, char ident,
 		int extra_len = extra ? strlen(extra) : 0;
 		int max_len = col - len - extra_len - ts_len - 3;
 
-		n = snprintf(line + pos, max_len + 1, ": %s", text);
+		n = snprintf(line + pos, max_len + 1, "%s%s",
+						label ? ": " : "", text);
 		if (n > max_len) {
 			line[pos + max_len - 1] = '.';
 			line[pos + max_len - 2] = '.';
@@ -317,9 +341,10 @@ static const struct {
 	{ 0x1b, "SCO Offset Rejected"					},
 	{ 0x1c, "SCO Interval Rejected"					},
 	{ 0x1d, "SCO Air Mode Rejected"					},
-	{ 0x1e, "Invalid LMP Parameters"				},
+	{ 0x1e, "Invalid LMP Parameters / Invalid LL Parameters"	},
 	{ 0x1f, "Unspecified Error"					},
-	{ 0x20, "Unsupported LMP Parameter Value"			},
+	{ 0x20, "Unsupported LMP Parameter Value / "
+		"Unsupported LL Parameter Value"			},
 	{ 0x21, "Role Change Not Allowed"				},
 	{ 0x22, "LMP Response Timeout / LL Response Timeout"		},
 	{ 0x23, "LMP Error Transaction Collision"			},
@@ -346,7 +371,7 @@ static const struct {
 	{ 0x38, "Host Busy - Pairing"					},
 	{ 0x39, "Connection Rejected due to No Suitable Channel Found"	},
 	{ 0x3a, "Controller Busy"					},
-	{ 0x3b, "Unacceptable Connection Interval"			},
+	{ 0x3b, "Unacceptable Connection Parameters"			},
 	{ 0x3c, "Directed Advertising Timeout"				},
 	{ 0x3d, "Connection Terminated due to MIC Failure"		},
 	{ 0x3e, "Connection Failed to be Established"			},
@@ -423,6 +448,52 @@ static void print_addr_type(const char *label, uint8_t addr_type)
 	print_field("%s: %s (0x%2.2x)", label, str, addr_type);
 }
 
+static void print_own_addr_type(uint8_t addr_type)
+{
+	const char *str;
+
+	switch (addr_type) {
+	case 0x00:
+	case 0x02:
+		str = "Public";
+		break;
+	case 0x01:
+	case 0x03:
+		str = "Random";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Own address type: %s (0x%2.2x)", str, addr_type);
+}
+
+static void print_peer_addr_type(const char *label, uint8_t addr_type)
+{
+	const char *str;
+
+	switch (addr_type) {
+	case 0x00:
+		str = "Public";
+		break;
+	case 0x01:
+		str = "Random";
+		break;
+	case 0x02:
+		str = "Resolved Public";
+		break;
+	case 0x03:
+		str = "Resolved Random";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("%s: %s (0x%2.2x)", label, str, addr_type);
+}
+
 static void print_addr_resolve(const char *label, const uint8_t *addr,
 					uint8_t addr_type, bool resolve)
 {
@@ -431,6 +502,7 @@ static void print_addr_resolve(const char *label, const uint8_t *addr,
 
 	switch (addr_type) {
 	case 0x00:
+	case 0x02:
 		if (!hwdb_get_company(addr, &company))
 			company = NULL;
 
@@ -450,6 +522,7 @@ static void print_addr_resolve(const char *label, const uint8_t *addr,
 		}
 		break;
 	case 0x01:
+	case 0x03:
 		switch ((addr[5] & 0xc0) >> 6) {
 		case 0x00:
 			str = "Non-Resolvable";
@@ -896,15 +969,30 @@ static const struct {
 	{  967, false, "Digital Pen"		},
 	{  968, false, "Barcode Scanner"	},
 	{ 1024, true,  "Glucose Meter"		},
-	{ 1088, true,  "Running Walking Sensor"	},
-	{ 1152, true,  "Cycling"		},
-	{ 1216, true,  "Undefined"		},
+	{ 1088, true,  "Running Walking Sensor"			},
+	{ 1089, false, "Running Walking Sensor: In-Shoe"	},
+	{ 1090, false, "Running Walking Sensor: On-Shoe"	},
+	{ 1091, false, "Running Walking Sensor: On-Hip"		},
+	{ 1152, true,  "Cycling"				},
+	{ 1153, false, "Cycling: Cycling Computer"		},
+	{ 1154, false, "Cycling: Speed Sensor"			},
+	{ 1155, false, "Cycling: Cadence Sensor"		},
+	{ 1156, false, "Cycling: Power Sensor"			},
+	{ 1157, false, "Cycling: Speed and Cadence Sensor"	},
+	{ 1216, true,  "Undefined"				},
 
-	{ 3136, true,  "Pulse Oximeter"		},
-	{ 3200, true,  "Undefined"		},
+	{ 3136, true,  "Pulse Oximeter"				},
+	{ 3137, false, "Pulse Oximeter: Fingertip"		},
+	{ 3138, false, "Pulse Oximeter: Wrist Worn"		},
+	{ 3200, true,  "Weight Scale"				},
+	{ 3264, true,  "Undefined"				},
 
-	{ 5184, true,  "Outdoor Sports Activity"},
-	{ 5248, true,  "Undefined"		},
+	{ 5184, true,  "Outdoor Sports Activity"		},
+	{ 5185, false, "Location Display Device"		},
+	{ 5186, false, "Location and Navigation Display Device"	},
+	{ 5187, false, "Location Pod"				},
+	{ 5188, false, "Location and Navigation Pod"		},
+	{ 5248, true,  "Undefined"				},
 	{ }
 };
 
@@ -973,9 +1061,10 @@ static void print_power_type(uint8_t type)
 	print_field("Type: %s (0x%2.2x)", str, type);
 }
 
-static void print_power_level(int8_t level)
+static void print_power_level(int8_t level, const char *type)
 {
-	print_field("TX power: %d dBm", level);
+	print_field("TX power%s%s%s: %d dBm",
+		type ? " (" : "", type ? type : "", type ? ")" : "", level);
 }
 
 static void print_sync_flow_control(uint8_t enable)
@@ -1036,7 +1125,7 @@ static void print_voice_setting(uint16_t setting)
 		str = "Linear";
 		break;
 	case 0x01:
-		str ="u-law";
+		str = "u-law";
 		break;
 	case 0x02:
 		str = "A-law";
@@ -1080,7 +1169,7 @@ static void print_voice_setting(uint16_t setting)
 		str = "CVSD";
 		break;
 	case 0x01:
-		str ="u-law";
+		str = "u-law";
 		break;
 	case 0x02:
 		str = "A-law";
@@ -1164,7 +1253,7 @@ static void print_link_policy(uint16_t link_policy)
 	if (policy & 0x0004)
 		print_field("  Enable Sniff Mode");
 	if (policy & 0x0008)
-		print_field("  Enabled Park State");
+		print_field("  Enable Park State");
 }
 
 static void print_air_mode(uint8_t mode)
@@ -1296,6 +1385,47 @@ static void print_afh_mode(uint8_t mode)
 		break;
 	case 0x01:
 		str = "Enabled";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Mode: %s (0x%2.2x)", str, mode);
+}
+
+static void print_erroneous_reporting(uint8_t mode)
+{
+	const char *str;
+
+	switch (mode) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Mode: %s (0x%2.2x)", str, mode);
+}
+
+static void print_loopback_mode(uint8_t mode)
+{
+	const char *str;
+
+	switch (mode) {
+	case 0x00:
+		str = "No Loopback";
+		break;
+	case 0x01:
+		str = "Local Loopback";
+		break;
+	case 0x02:
+		str = "Remote Loopback";
 		break;
 	default:
 		str = "Reserved";
@@ -1738,6 +1868,18 @@ static void print_randomizer_p256(const uint8_t *randomizer)
 	print_key("Randomizer R with P-256", randomizer);
 }
 
+static void print_pk256(const char *label, const uint8_t *key)
+{
+	print_field("%s:", label);
+	print_hex_field("  X", &key[0], 32);
+	print_hex_field("  Y", &key[32], 32);
+}
+
+static void print_dhkey(const uint8_t *dhkey)
+{
+	print_hex_field("Diffie-Hellman key", dhkey, 32);
+}
+
 static void print_passkey(uint32_t passkey)
 {
 	print_field("Passkey: %06d", le32_to_cpu(passkey));
@@ -1784,6 +1926,25 @@ static void print_oob_data(uint8_t oob_data)
 		break;
 	case 0x03:
 		str = "P-192 and P-256 authentication data present";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("OOB data: %s (0x%2.2x)", str, oob_data);
+}
+
+static void print_oob_data_response(uint8_t oob_data)
+{
+	const char *str;
+
+	switch (oob_data) {
+	case 0x00:
+		str = "Authentication data not present";
+		break;
+	case 0x01:
+		str = "Authentication data present";
 		break;
 	default:
 		str = "Reserved";
@@ -2019,6 +2180,34 @@ static void print_num_reports(uint8_t num_reports)
 	print_field("Num reports: %d", num_reports);
 }
 
+static void print_adv_event_type(uint8_t type)
+{
+	const char *str;
+
+	switch (type) {
+	case 0x00:
+		str = "Connectable undirected - ADV_IND";
+		break;
+	case 0x01:
+		str = "Connectable directed - ADV_DIRECT_IND";
+		break;
+	case 0x02:
+		str = "Scannable undirected - ADV_SCAN_IND";
+		break;
+	case 0x03:
+		str = "Non connectable undirected - ADV_NONCONN_IND";
+		break;
+	case 0x04:
+		str = "Scan response - SCAN_RSP";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Event type: %s (0x%2.2x)", str, type);
+}
+
 static void print_rssi(int8_t rssi)
 {
 	if ((uint8_t) rssi == 0x99 || rssi == 127)
@@ -2130,7 +2319,7 @@ static void print_channel_map(const uint8_t *map)
 
 			if (count > 1) {
 				print_field("  Channel %u-%u",
-						start, start + count - 1 );
+						start, start + count - 1);
 				count = 0;
 			} else if (count > 0) {
 				print_field("  Channel %u", start);
@@ -2183,6 +2372,9 @@ void packet_print_version(const char *label, uint8_t version,
 	case 0x07:
 		str = "Bluetooth 4.1";
 		break;
+	case 0x08:
+		str = "Bluetooth 4.2";
+		break;
 	default:
 		str = "Reserved";
 		break;
@@ -2231,6 +2423,74 @@ void packet_print_company(const char *label, uint16_t company)
 static void print_manufacturer(uint16_t manufacturer)
 {
 	packet_print_company("Manufacturer", le16_to_cpu(manufacturer));
+}
+
+static const struct {
+	uint16_t ver;
+	const char *str;
+} broadcom_uart_subversion_table[] = {
+	{ 0x210b, "BCM43142A0"	},	/* 001.001.011 */
+	{ 0x410e, "BCM43341B0"	},	/* 002.001.014 */
+	{ 0x4406, "BCM4324B3"	},	/* 002.004.006 */
+	{ }
+};
+
+static const struct {
+	uint16_t ver;
+	const char *str;
+} broadcom_usb_subversion_table[] = {
+	{ 0x210b, "BCM43142A0"	},	/* 001.001.011 */
+	{ 0x2112, "BCM4314A0"	},	/* 001.001.018 */
+	{ 0x2118, "BCM20702A0"	},	/* 001.001.024 */
+	{ 0x2126, "BCM4335A0"	},	/* 001.001.038 */
+	{ 0x220e, "BCM20702A1"	},	/* 001.002.014 */
+	{ 0x230f, "BCM4354A2"	},	/* 001.003.015 */
+	{ 0x4106, "BCM4335B0"	},	/* 002.001.006 */
+	{ 0x410e, "BCM20702B0"	},	/* 002.001.014 */
+	{ 0x6109, "BCM4335C0"	},	/* 003.001.009 */
+	{ 0x610c, "BCM4354"	},	/* 003.001.012 */
+	{ }
+};
+
+static void print_manufacturer_broadcom(uint16_t subversion, uint16_t revision)
+{
+	uint16_t ver = le16_to_cpu(subversion);
+	uint16_t rev = le16_to_cpu(revision);
+	const char *str = NULL;
+	int i;
+
+	switch ((rev & 0xf000) >> 12) {
+	case 0:
+	case 3:
+		for (i = 0; broadcom_uart_subversion_table[i].str; i++) {
+			if (broadcom_uart_subversion_table[i].ver == ver) {
+				str = broadcom_uart_subversion_table[i].str;
+				break;
+			}
+		}
+		break;
+	case 1:
+	case 2:
+		for (i = 0; broadcom_usb_subversion_table[i].str; i++) {
+			if (broadcom_usb_subversion_table[i].ver == ver) {
+				str = broadcom_usb_subversion_table[i].str;
+				break;
+			}
+		}
+		break;
+	}
+
+	if (str)
+		print_field("  Firmware: %3.3u.%3.3u.%3.3u (%s)",
+				(ver & 0xe000) >> 13,
+				(ver & 0x1f00) >> 8, ver & 0x00ff, str);
+	else
+		print_field("  Firmware: %3.3u.%3.3u.%3.3u",
+				(ver & 0xe000) >> 13,
+				(ver & 0x1f00) >> 8, ver & 0x00ff);
+
+	if (rev != 0xffff)
+		print_field("  Build: %4.4u", rev & 0x0fff);
 }
 
 static const char *get_supported_command(int bit);
@@ -2360,6 +2620,9 @@ static const struct features_data features_le[] = {
 	{  2, "Extended Reject Indication"		},
 	{  3, "Slave-initiated Features Exchange"	},
 	{  4, "LE Ping"					},
+	{  5, "LE Data Packet Length Extension"		},
+	{  6, "LL Privacy"				},
+	{  7, "Extended Scanner Filter Policies"	},
 	{ }
 };
 
@@ -2515,7 +2778,7 @@ static const struct {
 					LE_STATE_MASTER_SLAVE	},
 	{ 39, LE_STATE_CONN_SLAVE | LE_STATE_HIGH_DIRECT_ADV |
 					LE_STATE_SLAVE_SLAVE	},
-	{ 40, LE_STATE_CONN_SLAVE| LE_STATE_LOW_DIRECT_ADV |
+	{ 40, LE_STATE_CONN_SLAVE | LE_STATE_LOW_DIRECT_ADV |
 					LE_STATE_SLAVE_SLAVE	},
 	{ 41, LE_STATE_INITIATING | LE_STATE_CONN_SLAVE |
 					LE_STATE_MASTER_SLAVE	},
@@ -2583,7 +2846,7 @@ static void print_le_channel_map(const uint8_t *map)
 
 			if (count > 1) {
 				print_field("  Channel %u-%u",
-						start, start + count - 1 );
+						start, start + count - 1);
 				count = 0;
 			} else if (count > 0) {
 				print_field("  Channel %u", start);
@@ -2753,9 +3016,14 @@ static const struct {
 	{  0, "LE Connection Complete"			},
 	{  1, "LE Advertising Report"			},
 	{  2, "LE Connection Update Complete"		},
-	{  3, "LE Read Remote Used Features"		},
+	{  3, "LE Read Remote Used Features Complete"	},
 	{  4, "LE Long Term Key Request"		},
 	{  5, "LE Remote Connection Parameter Request"	},
+	{  6, "LE Data Length Change"			},
+	{  7, "LE Read Local P-256 Public Key Complete"	},
+	{  8, "LE Generate DHKey Complete"		},
+	{  9, "LE Enhanced Connection Complete"		},
+	{ 10, "LE Direct Advertising Report"		},
 	{ }
 };
 
@@ -3318,6 +3586,53 @@ void packet_print_ad(const void *data, uint8_t size)
 	print_eir(data, size, true);
 }
 
+struct broadcast_message {
+	uint32_t frame_sync_instant;
+	uint16_t bluetooth_clock_phase;
+	uint16_t left_open_offset;
+	uint16_t left_close_offset;
+	uint16_t right_open_offset;
+	uint16_t right_close_offset;
+	uint16_t frame_sync_period;
+	uint8_t  frame_sync_period_fraction;
+} __attribute__ ((packed));
+
+static void print_3d_broadcast(const void *data, uint8_t size)
+{
+	const struct broadcast_message *msg = data;
+	uint32_t instant;
+	uint16_t left_open, left_close, right_open, right_close;
+	uint16_t phase, period;
+	uint8_t period_frac;
+	bool mode;
+
+	instant = le32_to_cpu(msg->frame_sync_instant);
+	mode = !!(instant & 0x40000000);
+	phase = le16_to_cpu(msg->bluetooth_clock_phase);
+	left_open = le16_to_cpu(msg->left_open_offset);
+	left_close = le16_to_cpu(msg->left_close_offset);
+	right_open = le16_to_cpu(msg->right_open_offset);
+	right_close = le16_to_cpu(msg->right_close_offset);
+	period = le16_to_cpu(msg->frame_sync_period);
+	period_frac = msg->frame_sync_period_fraction;
+
+	print_field("  Frame sync instant: 0x%8.8x", instant & 0x7fffffff);
+	print_field("  Video mode: %s (%d)", mode ? "Dual View" : "3D", mode);
+	print_field("  Bluetooth clock phase: %d usec (0x%4.4x)",
+						phase, phase);
+	print_field("  Left lense shutter open offset: %d usec (0x%4.4x)",
+						left_open, left_open);
+	print_field("  Left lense shutter close offset: %d usec (0x%4.4x)",
+						left_close, left_close);
+	print_field("  Right lense shutter open offset: %d usec (0x%4.4x)",
+						right_open, right_open);
+	print_field("  Right lense shutter close offset: %d usec (0x%4.4x)",
+						right_close, right_close);
+	print_field("  Frame sync period: %d.%d usec (0x%4.4x 0x%2.2x)",
+						period, period_frac * 256,
+						period, period_frac);
+}
+
 void packet_hexdump(const unsigned char *buf, uint16_t len)
 {
 	static const char hexdigits[] = "0123456789abcdef";
@@ -3357,7 +3672,8 @@ void packet_hexdump(const unsigned char *buf, uint16_t len)
 	}
 }
 
-void packet_control(struct timeval *tv, uint16_t index, uint16_t opcode,
+void packet_control(struct timeval *tv, struct ucred *cred,
+					uint16_t index, uint16_t opcode,
 					const void *data, uint16_t size)
 {
 	if (index_filter && index_number != index)
@@ -3375,17 +3691,23 @@ static int addr2str(const uint8_t *addr, char *str)
 #define MAX_INDEX 16
 
 struct index_data {
-	uint8_t type;
-	uint8_t bdaddr[6];
+	uint8_t  type;
+	uint8_t  bdaddr[6];
+	uint16_t manufacturer;
 };
 
 static struct index_data index_list[MAX_INDEX];
 
-void packet_monitor(struct timeval *tv, uint16_t index, uint16_t opcode,
+void packet_monitor(struct timeval *tv, struct ucred *cred,
+					uint16_t index, uint16_t opcode,
 					const void *data, uint16_t size)
 {
 	const struct btsnoop_opcode_new_index *ni;
+	const struct btsnoop_opcode_index_info *ii;
+	const struct btsnoop_opcode_user_logging *ul;
 	char str[18], extra_str[24];
+	uint16_t manufacturer;
+	const char *ident;
 
 	if (index_filter && index_number != index)
 		return;
@@ -3402,6 +3724,7 @@ void packet_monitor(struct timeval *tv, uint16_t index, uint16_t opcode,
 		if (index < MAX_INDEX) {
 			index_list[index].type = ni->type;
 			memcpy(index_list[index].bdaddr, ni->bdaddr, 6);
+			index_list[index].manufacturer = UNKNOWN_MANUFACTURER;
 		}
 
 		addr2str(ni->bdaddr, str);
@@ -3416,26 +3739,72 @@ void packet_monitor(struct timeval *tv, uint16_t index, uint16_t opcode,
 		packet_del_index(tv, index, str);
 		break;
 	case BTSNOOP_OPCODE_COMMAND_PKT:
-		packet_hci_command(tv, index, data, size);
+		packet_hci_command(tv, cred, index, data, size);
 		break;
 	case BTSNOOP_OPCODE_EVENT_PKT:
-		packet_hci_event(tv, index, data, size);
+		packet_hci_event(tv, cred, index, data, size);
 		break;
 	case BTSNOOP_OPCODE_ACL_TX_PKT:
-		packet_hci_acldata(tv, index, false, data, size);
+		packet_hci_acldata(tv, cred, index, false, data, size);
 		break;
 	case BTSNOOP_OPCODE_ACL_RX_PKT:
-		packet_hci_acldata(tv, index, true, data, size);
+		packet_hci_acldata(tv, cred, index, true, data, size);
 		break;
 	case BTSNOOP_OPCODE_SCO_TX_PKT:
-		packet_hci_scodata(tv, index, false, data, size);
+		packet_hci_scodata(tv, cred, index, false, data, size);
 		break;
 	case BTSNOOP_OPCODE_SCO_RX_PKT:
-		packet_hci_scodata(tv, index, true, data, size);
+		packet_hci_scodata(tv, cred, index, true, data, size);
+		break;
+	case BTSNOOP_OPCODE_OPEN_INDEX:
+		if (index < MAX_INDEX)
+			addr2str(index_list[index].bdaddr, str);
+		else
+			sprintf(str, "00:00:00:00:00:00");
+
+		packet_open_index(tv, index, str);
+		break;
+	case BTSNOOP_OPCODE_CLOSE_INDEX:
+		if (index < MAX_INDEX)
+			addr2str(index_list[index].bdaddr, str);
+		else
+			sprintf(str, "00:00:00:00:00:00");
+
+		packet_close_index(tv, index, str);
+		break;
+	case BTSNOOP_OPCODE_INDEX_INFO:
+		ii = data;
+		manufacturer = le16_to_cpu(ii->manufacturer);
+
+		if (index < MAX_INDEX) {
+			memcpy(index_list[index].bdaddr, ii->bdaddr, 6);
+			index_list[index].manufacturer = manufacturer;
+		}
+
+		addr2str(ii->bdaddr, str);
+		packet_index_info(tv, index, str, manufacturer);
+		break;
+	case BTSNOOP_OPCODE_VENDOR_DIAG:
+		if (index < MAX_INDEX)
+			manufacturer = index_list[index].manufacturer;
+		else
+			manufacturer = UNKNOWN_MANUFACTURER;
+
+		packet_vendor_diag(tv, index, manufacturer, data, size);
+		break;
+	case BTSNOOP_OPCODE_SYSTEM_NOTE:
+		packet_system_note(tv, cred, index, data);
+		break;
+	case BTSNOOP_OPCODE_USER_LOGGING:
+		ul = data;
+		ident = ul->ident_len ? data + sizeof(*ul) : NULL;
+
+		packet_user_logging(tv, cred, index, ul->priority, ident,
+					data + sizeof(*ul) + ul->ident_len);
 		break;
 	default:
 		sprintf(extra_str, "(code %d len %d)", opcode, size);
-		print_packet(tv, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, index, '*', COLOR_ERROR,
 					"Unknown packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		break;
@@ -3452,10 +3821,10 @@ void packet_simulator(struct timeval *tv, uint16_t frequency,
 
 	sprintf(str, "%u MHz", frequency);
 
-	print_packet(tv, 0, '*', COLOR_PHY_PACKET,
+	print_packet(tv, NULL, 0, '*', COLOR_PHY_PACKET,
 					"Physical packet:", NULL, str);
 
-	ll_packet(frequency, data, size);
+	ll_packet(frequency, data, size, false);
 }
 
 static void null_cmd(const void *data, uint8_t size)
@@ -3835,7 +4204,7 @@ static void create_logic_link_cmd(const void *data, uint8_t size)
 
 static void accept_logic_link_cmd(const void *data, uint8_t size)
 {
-        const struct bt_hci_cmd_accept_logic_link *cmd = data;
+	const struct bt_hci_cmd_accept_logic_link *cmd = data;
 
 	print_phy_handle(cmd->phy_handle);
 	print_flow_spec("TX", cmd->tx_flow_spec);
@@ -3859,7 +4228,7 @@ static void logic_link_cancel_cmd(const void *data, uint8_t size)
 
 static void logic_link_cancel_rsp(const void *data, uint8_t size)
 {
-        const struct bt_hci_rsp_logic_link_cancel *rsp = data;
+	const struct bt_hci_rsp_logic_link_cancel *rsp = data;
 
 	print_status(rsp->status);
 	print_phy_handle(rsp->phy_handle);
@@ -3873,6 +4242,36 @@ static void flow_spec_modify_cmd(const void *data, uint8_t size)
 	print_handle(cmd->handle);
 	print_flow_spec("TX", cmd->tx_flow_spec);
 	print_flow_spec("RX", cmd->rx_flow_spec);
+}
+
+static void enhanced_setup_sync_conn_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_enhanced_setup_sync_conn *cmd = data;
+
+	print_handle(cmd->handle);
+	print_field("Transmit bandwidth: %d", le32_to_cpu(cmd->tx_bandwidth));
+	print_field("Receive bandwidth: %d", le32_to_cpu(cmd->rx_bandwidth));
+
+	/* TODO */
+
+	print_field("Max latency: %d", le16_to_cpu(cmd->max_latency));
+	print_pkt_type_sco(cmd->pkt_type);
+	print_retransmission_effort(cmd->retrans_effort);
+}
+
+static void enhanced_accept_sync_conn_request_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_enhanced_accept_sync_conn_request *cmd = data;
+
+	print_bdaddr(cmd->bdaddr);
+	print_field("Transmit bandwidth: %d", le32_to_cpu(cmd->tx_bandwidth));
+	print_field("Receive bandwidth: %d", le32_to_cpu(cmd->rx_bandwidth));
+
+	/* TODO */
+
+	print_field("Max latency: %d", le16_to_cpu(cmd->max_latency));
+	print_pkt_type_sco(cmd->pkt_type);
+	print_retransmission_effort(cmd->retrans_effort);
 }
 
 static void truncated_page_cmd(const void *data, uint8_t size)
@@ -4526,7 +4925,7 @@ static void read_tx_power_rsp(const void *data, uint8_t size)
 
 	print_status(rsp->status);
 	print_handle(rsp->handle);
-	print_power_level(rsp->level);
+	print_power_level(rsp->level, NULL);
 }
 
 static void read_sync_flow_control_rsp(const void *data, uint8_t size)
@@ -4561,6 +4960,18 @@ static void host_buffer_size_cmd(const void *data, uint8_t size)
 	print_field("SCO MTU: %-4d SCO max packet: %d",
 					cmd->sco_mtu,
 					le16_to_cpu(cmd->sco_max_pkt));
+}
+
+static void host_num_completed_packets_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_host_num_completed_packets *cmd = data;
+
+	print_field("Num handles: %d", cmd->num_handles);
+	print_handle(cmd->handle);
+	print_field("Count: %d", le16_to_cpu(cmd->count));
+
+	if (size > sizeof(*cmd))
+		packet_hexdump(data + sizeof(*cmd), size - sizeof(*cmd));
 }
 
 static void read_link_supv_timeout_cmd(const void *data, uint8_t size)
@@ -4776,14 +5187,29 @@ static void read_inquiry_resp_tx_power_rsp(const void *data, uint8_t size)
 	const struct bt_hci_rsp_read_inquiry_resp_tx_power *rsp = data;
 
 	print_status(rsp->status);
-	print_power_level(rsp->level);
+	print_power_level(rsp->level, NULL);
 }
 
 static void write_inquiry_tx_power_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_write_inquiry_tx_power *cmd = data;
 
-	print_power_level(cmd->level);
+	print_power_level(cmd->level, NULL);
+}
+
+static void read_erroneous_reporting_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_erroneous_reporting *rsp = data;
+
+	print_status(rsp->status);
+	print_erroneous_reporting(rsp->mode);
+}
+
+static void write_erroneous_reporting_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_write_erroneous_reporting *cmd = data;
+
+	print_erroneous_reporting(cmd->mode);
 }
 
 static void enhanced_flush_cmd(const void *data, uint8_t size)
@@ -4885,6 +5311,33 @@ static void write_flow_control_mode_cmd(const void *data, uint8_t size)
 	const struct bt_hci_cmd_write_flow_control_mode *cmd = data;
 
 	print_flow_control_mode(cmd->mode);
+}
+
+static void read_enhanced_tx_power_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_read_enhanced_tx_power *cmd = data;
+
+	print_handle(cmd->handle);
+	print_power_type(cmd->type);
+}
+
+static void read_enhanced_tx_power_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_enhanced_tx_power *rsp = data;
+
+	print_status(rsp->status);
+	print_handle(rsp->handle);
+	print_power_level(rsp->level_gfsk, "GFSK");
+	print_power_level(rsp->level_dqpsk, "DQPSK");
+	print_power_level(rsp->level_8dpsk, "8DPSK");
+}
+
+static void short_range_mode_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_short_range_mode *cmd = data;
+
+	print_phy_handle(cmd->phy_handle);
+	print_short_range_mode(cmd->mode);
 }
 
 static void read_le_host_supported_rsp(const void *data, uint8_t size)
@@ -5047,23 +5500,66 @@ static void read_local_oob_ext_data_rsp(const void *data, uint8_t size)
 	print_randomizer_p256(rsp->randomizer256);
 }
 
+static void read_ext_page_timeout_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_ext_page_timeout *rsp = data;
+
+	print_status(rsp->status);
+	print_timeout(rsp->timeout);
+}
+
+static void write_ext_page_timeout_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_write_ext_page_timeout *cmd = data;
+
+	print_timeout(cmd->timeout);
+}
+
+static void read_ext_inquiry_length_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_ext_inquiry_length *rsp = data;
+
+	print_status(rsp->status);
+	print_interval(rsp->interval);
+}
+
+static void write_ext_inquiry_length_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_write_ext_inquiry_length *cmd = data;
+
+	print_interval(cmd->interval);
+}
+
 static void read_local_version_rsp(const void *data, uint8_t size)
 {
 	const struct bt_hci_rsp_read_local_version *rsp = data;
+	uint16_t manufacturer;
 
 	print_status(rsp->status);
 	print_hci_version(rsp->hci_ver, rsp->hci_rev);
 
-	switch (index_list[index_current].type) {
-	case HCI_BREDR:
-		print_lmp_version(rsp->lmp_ver, rsp->lmp_subver);
-		break;
-	case HCI_AMP:
-		print_pal_version(rsp->lmp_ver, rsp->lmp_subver);
-		break;
+	manufacturer = le16_to_cpu(rsp->manufacturer);
+
+	if (index_current < MAX_INDEX) {
+		switch (index_list[index_current].type) {
+		case HCI_PRIMARY:
+			print_lmp_version(rsp->lmp_ver, rsp->lmp_subver);
+			break;
+		case HCI_AMP:
+			print_pal_version(rsp->lmp_ver, rsp->lmp_subver);
+			break;
+		}
+
+		index_list[index_current].manufacturer = manufacturer;
 	}
 
 	print_manufacturer(rsp->manufacturer);
+
+	switch (manufacturer) {
+	case 15:
+		print_manufacturer_broadcom(rsp->lmp_subver, rsp->hci_rev);
+		break;
+	}
 }
 
 static void read_local_commands_rsp(const void *data, uint8_t size)
@@ -5139,6 +5635,9 @@ static void read_bd_addr_rsp(const void *data, uint8_t size)
 
 	print_status(rsp->status);
 	print_bdaddr(rsp->bdaddr);
+
+	if (index_current < MAX_INDEX)
+		memcpy(index_list[index_current].bdaddr, rsp->bdaddr, 6);
 }
 
 static void read_data_block_size_rsp(const void *data, uint8_t size)
@@ -5441,6 +5940,21 @@ static void set_triggered_clock_capture_cmd(const void *data, uint8_t size)
 	print_field("Clock captures to filter: %u", cmd->num_filter);
 }
 
+static void read_loopback_mode_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_loopback_mode *rsp = data;
+
+	print_status(rsp->status);
+	print_loopback_mode(rsp->mode);
+}
+
+static void write_loopback_mode_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_write_loopback_mode *cmd = data;
+
+	print_loopback_mode(cmd->mode);
+}
+
 static void write_ssp_debug_mode_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_write_ssp_debug_mode *cmd = data;
@@ -5498,7 +6012,7 @@ static void le_set_adv_parameters_cmd(const void *data, uint8_t size)
 		str = "Scannable undirected - ADV_SCAN_IND";
 		break;
 	case 0x03:
-		str = "Non connectable undirect - ADV_NONCONN_IND";
+		str = "Non connectable undirected - ADV_NONCONN_IND";
 		break;
 	case 0x04:
 		str = "Connectable directed - ADV_DIRECT_IND (low duty cycle)";
@@ -5510,7 +6024,7 @@ static void le_set_adv_parameters_cmd(const void *data, uint8_t size)
 
 	print_field("Type: %s (0x%2.2x)", str, cmd->type);
 
-	print_addr_type("Own address type", cmd->own_addr_type);
+	print_own_addr_type(cmd->own_addr_type);
 	print_addr_type("Direct address type", cmd->direct_addr_type);
 	print_addr("Direct address", cmd->direct_addr, cmd->direct_addr_type);
 
@@ -5573,7 +6087,7 @@ static void le_read_adv_tx_power_rsp(const void *data, uint8_t size)
 	const struct bt_hci_rsp_le_read_adv_tx_power *rsp = data;
 
 	print_status(rsp->status);
-	print_power_level(rsp->level);
+	print_power_level(rsp->level, NULL);
 }
 
 static void le_set_adv_data_cmd(const void *data, uint8_t size)
@@ -5633,7 +6147,7 @@ static void le_set_scan_parameters_cmd(const void *data, uint8_t size)
 
 	print_interval(cmd->interval);
 	print_window(cmd->window);
-	print_addr_type("Own address type", cmd->own_addr_type);
+	print_own_addr_type(cmd->own_addr_type);
 
 	switch (cmd->filter_policy) {
 	case 0x00:
@@ -5706,9 +6220,9 @@ static void le_create_conn_cmd(const void *data, uint8_t size)
 
 	print_field("Filter policy: %s (0x%2.2x)", str, cmd->filter_policy);
 
-	print_addr_type("Peer address type", cmd->peer_addr_type);
+	print_peer_addr_type("Peer address type", cmd->peer_addr_type);
 	print_addr("Peer address", cmd->peer_addr, cmd->peer_addr_type);
-	print_addr_type("Own address type", cmd->own_addr_type);
+	print_own_addr_type(cmd->own_addr_type);
 
 	print_slot_125("Min connection interval", cmd->min_interval);
 	print_slot_125("Max connection interval", cmd->max_interval);
@@ -5927,6 +6441,143 @@ static void le_conn_param_req_neg_reply_rsp(const void *data, uint8_t size)
 	print_handle(rsp->handle);
 }
 
+static void le_set_data_length_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_set_data_length *cmd = data;
+
+	print_handle(cmd->handle);
+	print_field("TX octets: %d", le16_to_cpu(cmd->tx_len));
+	print_field("TX time: %d", le16_to_cpu(cmd->tx_time));
+}
+
+static void le_set_data_length_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_set_data_length *rsp = data;
+
+	print_status(rsp->status);
+	print_handle(rsp->handle);
+}
+
+static void le_read_default_data_length_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_read_default_data_length *rsp = data;
+
+	print_status(rsp->status);
+	print_field("TX octets: %d", le16_to_cpu(rsp->tx_len));
+	print_field("TX time: %d", le16_to_cpu(rsp->tx_time));
+}
+
+static void le_write_default_data_length_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_write_default_data_length *cmd = data;
+
+	print_field("TX octets: %d", le16_to_cpu(cmd->tx_len));
+	print_field("TX time: %d", le16_to_cpu(cmd->tx_time));
+}
+
+static void le_generate_dhkey_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_generate_dhkey *cmd = data;
+
+	print_pk256("Remote P-256 public key", cmd->remote_pk256);
+}
+
+static void le_add_to_resolv_list_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_add_to_resolv_list *cmd = data;
+
+	print_addr_type("Address type", cmd->addr_type);
+	print_addr("Address", cmd->addr, cmd->addr_type);
+	print_key("Peer identity resolving key", cmd->peer_irk);
+	print_key("Local identity resolving key", cmd->local_irk);
+}
+
+static void le_remove_from_resolv_list_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_remove_from_resolv_list *cmd = data;
+
+	print_addr_type("Address type", cmd->addr_type);
+	print_addr("Address", cmd->addr, cmd->addr_type);
+}
+
+static void le_read_resolv_list_size_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_read_resolv_list_size *rsp = data;
+
+	print_status(rsp->status);
+	print_field("Size: %u", rsp->size);
+}
+
+static void le_read_peer_resolv_addr_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_read_peer_resolv_addr *cmd = data;
+
+	print_addr_type("Address type", cmd->addr_type);
+	print_addr("Address", cmd->addr, cmd->addr_type);
+}
+
+static void le_read_peer_resolv_addr_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_read_peer_resolv_addr *rsp = data;
+
+	print_status(rsp->status);
+	print_addr("Address", rsp->addr, 0x01);
+}
+
+static void le_read_local_resolv_addr_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_read_local_resolv_addr *cmd = data;
+
+	print_addr_type("Address type", cmd->addr_type);
+	print_addr("Address", cmd->addr, cmd->addr_type);
+}
+
+static void le_read_local_resolv_addr_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_read_local_resolv_addr *rsp = data;
+
+	print_status(rsp->status);
+	print_addr("Address", rsp->addr, 0x01);
+}
+
+static void le_set_resolv_enable_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_set_resolv_enable *cmd = data;
+	const char *str;
+
+	switch (cmd->enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Address resolution: %s (0x%2.2x)", str, cmd->enable);
+}
+
+static void le_set_resolv_timeout_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_set_resolv_timeout *cmd = data;
+
+	print_field("Timeout: %u seconds", le16_to_cpu(cmd->timeout));
+}
+
+static void le_read_max_data_length_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_le_read_max_data_length *rsp = data;
+
+	print_status(rsp->status);
+	print_field("Max TX octets: %d", le16_to_cpu(rsp->max_tx_len));
+	print_field("Max TX time: %d", le16_to_cpu(rsp->max_tx_time));
+	print_field("Max RX octets: %d", le16_to_cpu(rsp->max_rx_len));
+	print_field("Max RX time: %d", le16_to_cpu(rsp->max_rx_time));
+}
+
 struct opcode_data {
 	uint16_t opcode;
 	int bit;
@@ -6052,8 +6703,10 @@ static const struct opcode_data opcode_table[] = {
 				logic_link_cancel_rsp, 3, true },
 	{ 0x043c, 175, "Flow Specifcation Modify",
 				flow_spec_modify_cmd, 34, true },
-	{ 0x043d, 235, "Enhanced Setup Synchronous Connection" },
-	{ 0x043e, 236, "Enhanced Accept Synchronous Connection Request" },
+	{ 0x043d, 235, "Enhanced Setup Synchronous Connection",
+				enhanced_setup_sync_conn_cmd, 59, true },
+	{ 0x043e, 236, "Enhanced Accept Synchronous Connection Request",
+				enhanced_accept_sync_conn_request_cmd, 63, true },
 	{ 0x043f, 246, "Truncated Page",
 				truncated_page_cmd, 9, true },
 	{ 0x0440, 247, "Truncated Page Cancel",
@@ -6074,7 +6727,7 @@ static const struct opcode_data opcode_table[] = {
 				status_bdaddr_rsp, 7, true },
 
 	/* OGF 2 - Link Policy */
-	{ 0x0801,  33, "Holde Mode",
+	{ 0x0801,  33, "Hold Mode",
 				hold_mode_cmd, 6, true },
 	{ 0x0803,  34, "Sniff Mode",
 				sniff_mode_cmd, 10, true },
@@ -6233,7 +6886,8 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x0c33,  86, "Host Buffer Size",
 				host_buffer_size_cmd, 7, true,
 				status_rsp, 1, true },
-	{ 0x0c35,  87, "Host Number of Completed Packets" },
+	{ 0x0c35,  87, "Host Number of Completed Packets",
+				host_num_completed_packets_cmd, 5, false },
 	{ 0x0c36,  88, "Read Link Supervision Timeout",
 				read_link_supv_timeout_cmd, 2, true,
 				read_link_supv_timeout_rsp, 5, true },
@@ -6311,8 +6965,12 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x0c59, 145, "Write Inquiry Transmit Power Level",
 				write_inquiry_tx_power_cmd, 1, true,
 				status_rsp, 1, true },
-	{ 0x0c5a, 146, "Read Default Erroneous Reporting" },
-	{ 0x0c5b, 147, "Write Default Erroneous Reporting" },
+	{ 0x0c5a, 146, "Read Default Erroneous Data Reporting",
+				null_cmd, 0, true,
+				read_erroneous_reporting_rsp, 2, true },
+	{ 0x0c5b, 147, "Write Default Erroneous Data Reporting",
+				write_erroneous_reporting_cmd, 1, true,
+				status_rsp, 1, true },
 	{ 0x0c5f, 158, "Enhanced Flush",
 				enhanced_flush_cmd, 3, true },
 	{ 0x0c60, 162, "Send Keypress Notification",
@@ -6335,10 +6993,13 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x0c67, 185, "Write Flow Control Mode",
 				write_flow_control_mode_cmd, 1, true,
 				status_rsp, 1, true },
-	{ 0x0c68, 192, "Read Enhanced Transmit Power Level" },
+	{ 0x0c68, 192, "Read Enhanced Transmit Power Level",
+				read_enhanced_tx_power_cmd, 3, true,
+				read_enhanced_tx_power_rsp, 6, true },
 	{ 0x0c69, 194, "Read Best Effort Flush Timeout" },
 	{ 0x0c6a, 195, "Write Best Effort Flush Timeout" },
-	{ 0x0c6b, 196, "Short Range Mode" },
+	{ 0x0c6b, 196, "Short Range Mode",
+				short_range_mode_cmd, 2, true },
 	{ 0x0c6c, 197, "Read LE Host Supported",
 				null_cmd, 0, true,
 				read_le_host_supported_rsp, 3, true },
@@ -6381,10 +7042,18 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x0c7d, 262, "Read Local OOB Extended Data",
 				null_cmd, 0, true,
 				read_local_oob_ext_data_rsp, 65, true },
-	{ 0x0c7e, 264, "Read Extended Page Timeout" },
-	{ 0x0c7f, 265, "Write Extended Page Timeout" },
-	{ 0x0c80, 266, "Read Extended Inquiry Length" },
-	{ 0x0c81, 267, "Write Extended Inquiry Length" },
+	{ 0x0c7e, 264, "Read Extended Page Timeout",
+				null_cmd, 0, true,
+				read_ext_page_timeout_rsp, 3, true },
+	{ 0x0c7f, 265, "Write Extended Page Timeout",
+				write_ext_page_timeout_cmd, 2, true,
+				status_rsp, 1, true },
+	{ 0x0c80, 266, "Read Extended Inquiry Length",
+				null_cmd, 0, true,
+				read_ext_inquiry_length_rsp, 3, true },
+	{ 0x0c81, 267, "Write Extended Inquiry Length",
+				write_ext_inquiry_length_cmd, 2, true,
+				status_rsp, 1, true },
 
 	/* OGF 4 - Information Parameter */
 	{ 0x1001, 115, "Read Local Version Information",
@@ -6454,8 +7123,12 @@ static const struct opcode_data opcode_table[] = {
 				status_rsp, 1, true },
 
 	/* OGF 6 - Testing */
-	{ 0x1801, 128, "Read Loopback Mode" },
-	{ 0x1802, 129, "Write Loopback Mode" },
+	{ 0x1801, 128, "Read Loopback Mode",
+				null_cmd, 0, true,
+				read_loopback_mode_rsp, 2, true },
+	{ 0x1802, 129, "Write Loopback Mode",
+				write_loopback_mode_cmd, 1, true,
+				status_rsp, 1, true },
 	{ 0x1803, 130, "Enable Device Under Test Mode",
 				null_cmd, 0, true,
 				status_rsp, 1, true },
@@ -6560,6 +7233,46 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x2021, 269, "LE Remote Connection Parameter Request Negative Reply",
 				le_conn_param_req_neg_reply_cmd, 3, true,
 				le_conn_param_req_neg_reply_rsp, 3, true },
+	{ 0x2022, 270, "LE Set Data Length",
+				le_set_data_length_cmd, 6, true,
+				le_set_data_length_rsp, 3, true },
+	{ 0x2023, 271, "LE Read Suggested Default Data Length",
+				null_cmd, 0, true,
+				le_read_default_data_length_rsp, 5, true },
+	{ 0x2024, 272, "LE Write Suggested Default Data Length",
+				le_write_default_data_length_cmd, 4, true,
+				status_rsp, 1, true },
+	{ 0x2025, 273, "LE Read Local P-256 Public Key",
+				null_cmd, 0, true },
+	{ 0x2026, 274, "LE Generate DHKey",
+				le_generate_dhkey_cmd, 64, true },
+	{ 0x2027, 275, "LE Add Device To Resolving List",
+				le_add_to_resolv_list_cmd, 39, true,
+				status_rsp, 1, true },
+	{ 0x2028, 276, "LE Remove Device From Resolving List",
+				le_remove_from_resolv_list_cmd, 7, true,
+				status_rsp, 1, true },
+	{ 0x2029, 277, "LE Clear Resolving List",
+				null_cmd, 0, true,
+				status_rsp, 1, true },
+	{ 0x202a, 278, "LE Read Resolving List Size",
+				null_cmd, 0, true,
+				le_read_resolv_list_size_rsp, 2, true },
+	{ 0x202b, 279, "LE Read Peer Resolvable Address",
+				le_read_peer_resolv_addr_cmd, 7, true,
+				le_read_peer_resolv_addr_rsp, 7, true },
+	{ 0x202c, 280, "LE Read Local Resolvable Address",
+				le_read_local_resolv_addr_cmd, 7, true,
+				le_read_local_resolv_addr_rsp, 7, true },
+	{ 0x202d, 281, "LE Set Address Resolution Enable",
+				le_set_resolv_enable_cmd, 1, true,
+				status_rsp, 1, true },
+	{ 0x202e, 282, "LE Set Resolvable Private Address Timeout",
+				le_set_resolv_timeout_cmd, 2, true,
+				status_rsp, 1, true },
+	{ 0x202f, 283, "LE Read Maximum Data Length",
+				null_cmd, 0, true,
+				le_read_max_data_length_rsp, 9, true },
 	{ }
 };
 
@@ -6570,6 +7283,63 @@ static const char *get_supported_command(int bit)
 	for (i = 0; opcode_table[i].str; i++) {
 		if (opcode_table[i].bit == bit)
 			return opcode_table[i].str;
+	}
+
+	return NULL;
+}
+
+static const char *current_vendor_str(void)
+{
+	uint16_t manufacturer;
+
+	if (index_current < MAX_INDEX)
+		manufacturer = index_list[index_current].manufacturer;
+	else
+		manufacturer = UNKNOWN_MANUFACTURER;
+
+	switch (manufacturer) {
+	case 2:
+		return "Intel";
+	case 15:
+		return "Broadcom";
+	}
+
+	return NULL;
+}
+
+static const struct vendor_ocf *current_vendor_ocf(uint16_t ocf)
+{
+	uint16_t manufacturer;
+
+	if (index_current < MAX_INDEX)
+		manufacturer = index_list[index_current].manufacturer;
+	else
+		manufacturer = UNKNOWN_MANUFACTURER;
+
+	switch (manufacturer) {
+	case 2:
+		return intel_vendor_ocf(ocf);
+	case 15:
+		return broadcom_vendor_ocf(ocf);
+	}
+
+	return NULL;
+}
+
+static const struct vendor_evt *current_vendor_evt(uint8_t evt)
+{
+	uint16_t manufacturer;
+
+	if (index_current < MAX_INDEX)
+		manufacturer = index_list[index_current].manufacturer;
+	else
+		manufacturer = UNKNOWN_MANUFACTURER;
+
+	switch (manufacturer) {
+	case 2:
+		return intel_vendor_evt(evt);
+	case 15:
+		return broadcom_vendor_evt(evt);
 	}
 
 	return NULL;
@@ -6693,6 +7463,12 @@ static void remote_version_complete_evt(const void *data, uint8_t size)
 	print_handle(evt->handle);
 	print_lmp_version(evt->lmp_ver, evt->lmp_subver);
 	print_manufacturer(evt->manufacturer);
+
+	switch (le16_to_cpu(evt->manufacturer)) {
+	case 15:
+		print_manufacturer_broadcom(evt->lmp_subver, 0xffff);
+		break;
+	}
 }
 
 static void qos_setup_complete_evt(const void *data, uint8_t size)
@@ -6717,8 +7493,10 @@ static void cmd_complete_evt(const void *data, uint8_t size)
 	uint16_t opcode = le16_to_cpu(evt->opcode);
 	uint16_t ogf = cmd_opcode_ogf(opcode);
 	uint16_t ocf = cmd_opcode_ocf(opcode);
+	struct opcode_data vendor_data;
 	const struct opcode_data *opcode_data = NULL;
 	const char *opcode_color, *opcode_str;
+	char vendor_str[150];
 	int i;
 
 	for (i = 0; opcode_table[i].str; i++) {
@@ -6736,8 +7514,32 @@ static void cmd_complete_evt(const void *data, uint8_t size)
 		opcode_str = opcode_data->str;
 	} else {
 		if (ogf == 0x3f) {
-			opcode_color = COLOR_HCI_COMMAND;
-			opcode_str = "Vendor";
+			const struct vendor_ocf *vnd = current_vendor_ocf(ocf);
+
+			if (vnd) {
+				const char *str = current_vendor_str();
+
+				if (str) {
+					snprintf(vendor_str, sizeof(vendor_str),
+							"%s %s", str, vnd->str);
+					vendor_data.str = vendor_str;
+				} else
+					vendor_data.str = vnd->str;
+				vendor_data.rsp_func = vnd->rsp_func;
+				vendor_data.rsp_size = vnd->rsp_size;
+				vendor_data.rsp_fixed = vnd->rsp_fixed;
+
+				opcode_data = &vendor_data;
+
+				if (opcode_data->rsp_func)
+					opcode_color = COLOR_HCI_COMMAND;
+				else
+					opcode_color = COLOR_HCI_COMMAND_UNKNOWN;
+				opcode_str = opcode_data->str;
+			} else {
+				opcode_color = COLOR_HCI_COMMAND;
+				opcode_str = "Vendor";
+			}
 		} else {
 			opcode_color = COLOR_HCI_COMMAND_UNKNOWN;
 			opcode_str = "Unknown";
@@ -6789,6 +7591,7 @@ static void cmd_status_evt(const void *data, uint8_t size)
 	uint16_t ocf = cmd_opcode_ocf(opcode);
 	const struct opcode_data *opcode_data = NULL;
 	const char *opcode_color, *opcode_str;
+	char vendor_str[150];
 	int i;
 
 	for (i = 0; opcode_table[i].str; i++) {
@@ -6803,8 +7606,23 @@ static void cmd_status_evt(const void *data, uint8_t size)
 		opcode_str = opcode_data->str;
 	} else {
 		if (ogf == 0x3f) {
-			opcode_color = COLOR_HCI_COMMAND;
-			opcode_str = "Vendor";
+			const struct vendor_ocf *vnd = current_vendor_ocf(ocf);
+
+			if (vnd) {
+				const char *str = current_vendor_str();
+
+				if (str) {
+					snprintf(vendor_str, sizeof(vendor_str),
+							"%s %s", str, vnd->str);
+					opcode_str = vendor_str;
+				} else
+					opcode_str = vnd->str;
+
+				opcode_color = COLOR_HCI_COMMAND;
+			} else {
+				opcode_color = COLOR_HCI_COMMAND;
+				opcode_str = "Vendor";
+			}
 		} else {
 			opcode_color = COLOR_HCI_COMMAND_UNKNOWN;
 			opcode_str = "Unknown";
@@ -6864,11 +7682,15 @@ static void mode_change_evt(const void *data, uint8_t size)
 
 static void return_link_keys_evt(const void *data, uint8_t size)
 {
-	uint8_t num_keys = *((uint8_t *) data);
+	const struct bt_hci_evt_return_link_keys *evt = data;
+	uint8_t i;
 
-	print_field("Num keys: %d", num_keys);
+	print_field("Num keys: %d", evt->num_keys);
 
-	packet_hexdump(data + 1, size - 1);
+	for (i = 0; i < evt->num_keys; i++) {
+		print_bdaddr(evt->keys + (i * 22));
+		print_link_key(evt->keys + (i * 22) + 6);
+	}
 }
 
 static void pin_code_request_evt(const void *data, uint8_t size)
@@ -7073,7 +7895,7 @@ static void io_capability_response_evt(const void *data, uint8_t size)
 
 	print_bdaddr(evt->bdaddr);
 	print_io_capability(evt->capability);
-	print_oob_data(evt->oob_data);
+	print_oob_data_response(evt->oob_data);
 	print_authentication(evt->authentication);
 }
 
@@ -7290,6 +8112,16 @@ static void amp_status_change_evt(const void *data, uint8_t size)
 	print_amp_status(evt->amp_status);
 }
 
+static void triggered_clock_capture_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_triggered_clock_capture *evt = data;
+
+	print_handle(evt->handle);
+	print_clock_type(evt->type);
+	print_clock(evt->clock);
+	print_clock_offset(evt->clock_offset);
+}
+
 static void sync_train_complete_evt(const void *data, uint8_t size)
 {
 	const struct bt_hci_evt_sync_train_complete *evt = data;
@@ -7328,7 +8160,10 @@ static void slave_broadcast_receive_evt(const void *data, uint8_t size)
 		print_text(COLOR_ERROR, "invalid data size (%d != %d)",
 						size - 18, evt->length);
 
-	packet_hexdump(data + 18, size - 18);
+	if (evt->lt_addr == 0x01 && evt->length == 17)
+		print_3d_broadcast(data + 18, size - 18);
+	else
+		packet_hexdump(data + 18, size - 18);
 }
 
 static void slave_broadcast_timeout_evt(const void *data, uint8_t size)
@@ -7380,7 +8215,7 @@ static void le_conn_complete_evt(const void *data, uint8_t size)
 	print_status(evt->status);
 	print_handle(evt->handle);
 	print_role(evt->role);
-	print_addr_type("Peer address type", evt->peer_addr_type);
+	print_peer_addr_type("Peer address type", evt->peer_addr_type);
 	print_addr("Peer address", evt->peer_addr, evt->peer_addr_type);
 	print_slot_125("Connection interval", evt->interval);
 	print_slot_125("Connection latency", evt->latency);
@@ -7396,36 +8231,14 @@ static void le_conn_complete_evt(const void *data, uint8_t size)
 static void le_adv_report_evt(const void *data, uint8_t size)
 {
 	const struct bt_hci_evt_le_adv_report *evt = data;
-	const char *str;
 	uint8_t evt_len;
 	int8_t *rssi;
 
 	print_num_reports(evt->num_reports);
 
 report:
-	switch (evt->event_type) {
-	case 0x00:
-		str = "Connectable undirected - ADV_IND";
-		break;
-	case 0x01:
-		str = "Connectable directed - ADV_DIRECT_IND";
-		break;
-	case 0x02:
-		str = "Scannable undirected - ADV_SCAN_IND";
-		break;
-	case 0x03:
-		str = "Non connectable undirected - ADV_NONCONN_IND";
-		break;
-	case 0x04:
-		str = "Scan response - SCAN_RSP";
-		break;
-	default:
-		str = "Reserved";
-		break;
-	}
-
-	print_field("Event type: %s (0x%2.2x)", str, evt->event_type);
-	print_addr_type("Address type", evt->addr_type);
+	print_adv_event_type(evt->event_type);
+	print_peer_addr_type("Address type", evt->addr_type);
 	print_addr("Address", evt->addr, evt->addr_type);
 	print_field("Data length: %d", evt->data_len);
 	print_eir(evt->data, evt->data_len, true);
@@ -7487,6 +8300,72 @@ static void le_conn_param_request_evt(const void *data, uint8_t size)
 					le16_to_cpu(evt->supv_timeout));
 }
 
+static void le_data_length_change_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_data_length_change *evt = data;
+
+	print_handle(evt->handle);
+	print_field("Max TX octets: %d", le16_to_cpu(evt->max_tx_len));
+	print_field("Max TX time: %d", le16_to_cpu(evt->max_tx_time));
+	print_field("Max RX octets: %d", le16_to_cpu(evt->max_rx_len));
+	print_field("Max RX time: %d", le16_to_cpu(evt->max_rx_time));
+}
+
+static void le_read_local_pk256_complete_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_read_local_pk256_complete *evt = data;
+
+	print_status(evt->status);
+	print_pk256("Local P-256 public key", evt->local_pk256);
+}
+
+static void le_generate_dhkey_complete_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_generate_dhkey_complete *evt = data;
+
+	print_status(evt->status);
+	print_dhkey(evt->dhkey);
+}
+
+static void le_enhanced_conn_complete_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_enhanced_conn_complete *evt = data;
+
+	print_status(evt->status);
+	print_handle(evt->handle);
+	print_role(evt->role);
+	print_peer_addr_type("Peer address type", evt->peer_addr_type);
+	print_addr("Peer address", evt->peer_addr, evt->peer_addr_type);
+	print_addr("Local resolvable private address", evt->local_rpa, 0x01);
+	print_addr("Peer resolvable private address", evt->peer_rpa, 0x01);
+	print_slot_125("Connection interval", evt->interval);
+	print_slot_125("Connection latency", evt->latency);
+	print_field("Supervision timeout: %d msec (0x%4.4x)",
+					le16_to_cpu(evt->supv_timeout) * 10,
+					le16_to_cpu(evt->supv_timeout));
+	print_field("Master clock accuracy: 0x%2.2x", evt->clock_accuracy);
+
+	if (evt->status == 0x00)
+		assign_handle(le16_to_cpu(evt->handle), 0x01);
+}
+
+static void le_direct_adv_report_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_direct_adv_report *evt = data;
+
+	print_num_reports(evt->num_reports);
+
+	print_adv_event_type(evt->event_type);
+	print_peer_addr_type("Address type", evt->addr_type);
+	print_addr("Address", evt->addr, evt->addr_type);
+	print_addr_type("Direct address type", evt->direct_addr_type);
+	print_addr("Direct address", evt->direct_addr, evt->direct_addr_type);
+	print_rssi(evt->rssi);
+
+	if (size > sizeof(*evt))
+		packet_hexdump(data + sizeof(*evt), size - sizeof(*evt));
+}
+
 struct subevent_data {
 	uint8_t subevent;
 	const char *str;
@@ -7495,7 +8374,42 @@ struct subevent_data {
 	bool fixed;
 };
 
-static const struct subevent_data subevent_table[] = {
+static void print_subevent(const struct subevent_data *subevent_data,
+					const void *data, uint8_t size)
+{
+	const char *subevent_color;
+
+	if (subevent_data->func)
+		subevent_color = COLOR_HCI_EVENT;
+	else
+		subevent_color = COLOR_HCI_EVENT_UNKNOWN;
+
+	print_indent(6, subevent_color, "", subevent_data->str, COLOR_OFF,
+					" (0x%2.2x)", subevent_data->subevent);
+
+	if (!subevent_data->func) {
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (subevent_data->fixed) {
+		if (size != subevent_data->size) {
+			print_text(COLOR_ERROR, "invalid packet size");
+			packet_hexdump(data, size);
+			return;
+		}
+	} else {
+		if (size < subevent_data->size) {
+			print_text(COLOR_ERROR, "too short packet");
+			packet_hexdump(data, size);
+			return;
+		}
+	}
+
+	subevent_data->func(data, size);
+}
+
+static const struct subevent_data le_meta_event_table[] = {
 	{ 0x01, "LE Connection Complete",
 				le_conn_complete_evt, 18, true },
 	{ 0x02, "LE Advertising Report",
@@ -7508,62 +8422,74 @@ static const struct subevent_data subevent_table[] = {
 				le_long_term_key_request_evt, 12, true },
 	{ 0x06, "LE Remote Connection Parameter Request",
 				le_conn_param_request_evt, 10, true },
+	{ 0x07, "LE Data Length Change",
+				le_data_length_change_evt, 10, true },
+	{ 0x08, "LE Read Local P-256 Public Key Complete",
+				le_read_local_pk256_complete_evt, 65, true },
+	{ 0x09, "LE Generate DHKey Complete",
+				le_generate_dhkey_complete_evt, 33, true },
+	{ 0x0a, "LE Enhanced Connection Complete",
+				le_enhanced_conn_complete_evt, 30, true },
+	{ 0x0b, "LE Direct Advertising Report",
+				le_direct_adv_report_evt, 1, false },
 	{ }
 };
 
 static void le_meta_event_evt(const void *data, uint8_t size)
 {
 	uint8_t subevent = *((const uint8_t *) data);
-	const struct subevent_data *subevent_data = NULL;
-	const char *subevent_color, *subevent_str;
+	struct subevent_data unknown;
+	const struct subevent_data *subevent_data = &unknown;
 	int i;
 
-	for (i = 0; subevent_table[i].str; i++) {
-		if (subevent_table[i].subevent == subevent) {
-			subevent_data = &subevent_table[i];
+	unknown.subevent = subevent;
+	unknown.str = "Unknown";
+	unknown.func = NULL;
+	unknown.size = 0;
+	unknown.fixed = true;
+
+	for (i = 0; le_meta_event_table[i].str; i++) {
+		if (le_meta_event_table[i].subevent == subevent) {
+			subevent_data = &le_meta_event_table[i];
 			break;
 		}
 	}
 
-	if (subevent_data) {
-		if (subevent_data->func)
-			subevent_color = COLOR_HCI_EVENT;
-		else
-			subevent_color = COLOR_HCI_EVENT_UNKNOWN;
-		subevent_str = subevent_data->str;
-	} else {
-		subevent_color = COLOR_HCI_EVENT_UNKNOWN;
-		subevent_str = "Unknown";
-	}
-
-	print_indent(6, subevent_color, "", subevent_str, COLOR_OFF,
-						" (0x%2.2x)", subevent);
-
-	if (!subevent_data || !subevent_data->func) {
-		packet_hexdump(data + 1, size - 1);
-		return;
-	}
-
-	if (subevent_data->fixed) {
-		if (size - 1 != subevent_data->size) {
-			print_text(COLOR_ERROR, "invalid packet size");
-			packet_hexdump(data + 1, size - 1);
-			return;
-		}
-	} else {
-		if (size - 1 < subevent_data->size) {
-			print_text(COLOR_ERROR, "too short packet");
-			packet_hexdump(data + 1, size - 1);
-			return;
-		}
-	}
-
-	subevent_data->func(data + 1, size - 1);
+	print_subevent(subevent_data, data + 1, size - 1);
 }
 
 static void vendor_evt(const void *data, uint8_t size)
 {
-	vendor_event(0xffff, data, size);
+	uint8_t subevent = *((const uint8_t *) data);
+	struct subevent_data vendor_data;
+	char vendor_str[150];
+	const struct vendor_evt *vnd = current_vendor_evt(subevent);
+
+	if (vnd) {
+		const char *str = current_vendor_str();
+
+		if (str) {
+			snprintf(vendor_str, sizeof(vendor_str),
+						"%s %s", str, vnd->str);
+			vendor_data.str = vendor_str;
+		} else
+			vendor_data.str = vnd->str;
+		vendor_data.subevent = subevent;
+		vendor_data.func = vnd->evt_func;
+		vendor_data.size = vnd->evt_size;
+		vendor_data.fixed = vnd->evt_fixed;
+
+		print_subevent(&vendor_data, data + 1, size - 1);
+	} else {
+		uint16_t manufacturer;
+
+		if (index_current < MAX_INDEX)
+			manufacturer = index_list[index_current].manufacturer;
+		else
+			manufacturer = UNKNOWN_MANUFACTURER;
+
+		vendor_event(manufacturer, data, size);
+	}
 }
 
 struct event_data {
@@ -7704,7 +8630,8 @@ static const struct event_data event_table[] = {
 				short_range_mode_change_evt, 3, true },
 	{ 0x4d, "AMP Status Change",
 				amp_status_change_evt, 2, true },
-	{ 0x4e, "Triggered Clock Capture" },
+	{ 0x4e, "Triggered Clock Capture",
+				triggered_clock_capture_evt, 9, true },
 	{ 0x4f, "Synchronization Train Complete",
 				sync_train_complete_evt, 1, true },
 	{ 0x50, "Synchronization Train Received",
@@ -7736,31 +8663,142 @@ void packet_new_index(struct timeval *tv, uint16_t index, const char *label,
 	sprintf(details, "(%s,%s,%s)", hci_typetostr(type),
 					hci_bustostr(bus), name);
 
-	print_packet(tv, index, '=', COLOR_NEW_INDEX, "New Index",
+	print_packet(tv, NULL, index, '=', COLOR_NEW_INDEX, "New Index",
 							label, details);
 }
 
 void packet_del_index(struct timeval *tv, uint16_t index, const char *label)
 {
-	print_packet(tv, index, '=', COLOR_DEL_INDEX, "Delete Index",
+	print_packet(tv, NULL, index, '=', COLOR_DEL_INDEX, "Delete Index",
 							label, NULL);
 }
 
-void packet_hci_command(struct timeval *tv, uint16_t index,
+void packet_open_index(struct timeval *tv, uint16_t index, const char *label)
+{
+	print_packet(tv, NULL, index, '=', COLOR_OPEN_INDEX, "Open Index",
+							label, NULL);
+}
+
+void packet_close_index(struct timeval *tv, uint16_t index, const char *label)
+{
+	print_packet(tv, NULL, index, '=', COLOR_CLOSE_INDEX, "Close Index",
+							label, NULL);
+}
+
+void packet_index_info(struct timeval *tv, uint16_t index, const char *label,
+							uint16_t manufacturer)
+{
+	char details[128];
+
+	sprintf(details, "(%s)", bt_compidtostr(manufacturer));
+
+	print_packet(tv, NULL, index, '=', COLOR_INDEX_INFO, "Index Info",
+							label, details);
+}
+
+void packet_vendor_diag(struct timeval *tv, uint16_t index,
+					uint16_t manufacturer,
+					const void *data, uint16_t size)
+{
+	char extra_str[16];
+
+	sprintf(extra_str, "(len %d)", size);
+
+	print_packet(tv, NULL, index, '=', COLOR_VENDOR_DIAG,
+					"Vendor Diagnostic", NULL, extra_str);
+
+	switch (manufacturer) {
+	case 15:
+		broadcom_lm_diag(data, size);
+		break;
+	default:
+		packet_hexdump(data, size);
+		break;
+	}
+}
+
+void packet_system_note(struct timeval *tv, struct ucred *cred,
+					uint16_t index, const void *message)
+{
+	print_packet(tv, cred, index, '=', COLOR_INFO, "Note", message, NULL);
+}
+
+void packet_user_logging(struct timeval *tv, struct ucred *cred,
+					uint16_t index, uint8_t priority,
+					const char *ident, const char *message)
+{
+	char pid_str[128];
+	const char *label;
+	const char *color;
+
+	if (priority > priority_level)
+		return;
+
+	switch (priority) {
+	case BTSNOOP_PRIORITY_ERR:
+		color = COLOR_ERROR;
+		break;
+	case BTSNOOP_PRIORITY_WARNING:
+		color = COLOR_WARN;
+		break;
+	case BTSNOOP_PRIORITY_INFO:
+		color = COLOR_INFO;
+		break;
+	case BTSNOOP_PRIORITY_DEBUG:
+		color = COLOR_DEBUG;
+		break;
+	default:
+		color = COLOR_WHITE_BG;
+		break;
+	}
+
+	if (cred) {
+		char *path = alloca(24);
+		char line[128];
+		FILE *fp;
+
+		snprintf(path, 23, "/proc/%u/comm", cred->pid);
+
+		fp = fopen(path, "re");
+		if (fp) {
+			if (fgets(line, sizeof(line), fp)) {
+				line[strcspn(line, "\r\n")] = '\0';
+				snprintf(pid_str, sizeof(pid_str), "%s[%u]",
+							line, cred->pid);
+			} else
+				snprintf(pid_str, sizeof(pid_str), "%u",
+								cred->pid);
+			fclose(fp);
+		} else
+			snprintf(pid_str, sizeof(pid_str), "%u", cred->pid);
+
+		label = pid_str;
+        } else {
+		if (ident)
+			label = ident;
+		else
+			label = "Message";
+	}
+
+	print_packet(tv, cred, index, '=', color, label, message, NULL);
+}
+
+void packet_hci_command(struct timeval *tv, struct ucred *cred, uint16_t index,
 					const void *data, uint16_t size)
 {
 	const hci_command_hdr *hdr = data;
 	uint16_t opcode = le16_to_cpu(hdr->opcode);
 	uint16_t ogf = cmd_opcode_ogf(opcode);
 	uint16_t ocf = cmd_opcode_ocf(opcode);
+	struct opcode_data vendor_data;
 	const struct opcode_data *opcode_data = NULL;
 	const char *opcode_color, *opcode_str;
-	char extra_str[25];
+	char extra_str[25], vendor_str[150];
 	int i;
 
 	if (size < HCI_COMMAND_HDR_SIZE) {
 		sprintf(extra_str, "(len %d)", size);
-		print_packet(tv, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, index, '*', COLOR_ERROR,
 			"Malformed HCI Command packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		return;
@@ -7784,8 +8822,32 @@ void packet_hci_command(struct timeval *tv, uint16_t index,
 		opcode_str = opcode_data->str;
 	} else {
 		if (ogf == 0x3f) {
-			opcode_color = COLOR_HCI_COMMAND;
-			opcode_str = "Vendor";
+			const struct vendor_ocf *vnd = current_vendor_ocf(ocf);
+
+			if (vnd) {
+				const char *str = current_vendor_str();
+
+				if (str) {
+					snprintf(vendor_str, sizeof(vendor_str),
+							"%s %s", str, vnd->str);
+					vendor_data.str = vendor_str;
+				} else
+					vendor_data.str = vnd->str;
+				vendor_data.cmd_func = vnd->cmd_func;
+				vendor_data.cmd_size = vnd->cmd_size;
+				vendor_data.cmd_fixed = vnd->cmd_fixed;
+
+				opcode_data = &vendor_data;
+
+				if (opcode_data->cmd_func)
+					opcode_color = COLOR_HCI_COMMAND;
+				else
+					opcode_color = COLOR_HCI_COMMAND_UNKNOWN;
+				opcode_str = opcode_data->str;
+			} else {
+				opcode_color = COLOR_HCI_COMMAND;
+				opcode_str = "Vendor";
+			}
 		} else {
 			opcode_color = COLOR_HCI_COMMAND_UNKNOWN;
 			opcode_str = "Unknown";
@@ -7794,7 +8856,7 @@ void packet_hci_command(struct timeval *tv, uint16_t index,
 
 	sprintf(extra_str, "(0x%2.2x|0x%4.4x) plen %d", ogf, ocf, hdr->plen);
 
-	print_packet(tv, index, '<', opcode_color, "HCI Command",
+	print_packet(tv, cred, index, '<', opcode_color, "HCI Command",
 							opcode_str, extra_str);
 
 	if (!opcode_data || !opcode_data->cmd_func) {
@@ -7826,7 +8888,7 @@ void packet_hci_command(struct timeval *tv, uint16_t index,
 	opcode_data->cmd_func(data, hdr->plen);
 }
 
-void packet_hci_event(struct timeval *tv, uint16_t index,
+void packet_hci_event(struct timeval *tv, struct ucred *cred, uint16_t index,
 					const void *data, uint16_t size)
 {
 	const hci_event_hdr *hdr = data;
@@ -7837,7 +8899,7 @@ void packet_hci_event(struct timeval *tv, uint16_t index,
 
 	if (size < HCI_EVENT_HDR_SIZE) {
 		sprintf(extra_str, "(len %d)", size);
-		print_packet(tv, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, index, '*', COLOR_ERROR,
 			"Malformed HCI Event packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		return;
@@ -7866,8 +8928,8 @@ void packet_hci_event(struct timeval *tv, uint16_t index,
 
 	sprintf(extra_str, "(0x%2.2x) plen %d", hdr->evt, hdr->plen);
 
-	print_packet(tv, index, '>', event_color, "HCI Event",
-                                                        event_str, extra_str);
+	print_packet(tv, cred, index, '>', event_color, "HCI Event",
+						event_str, extra_str);
 
 	if (!event_data || !event_data->func) {
 		packet_hexdump(data, size);
@@ -7898,8 +8960,8 @@ void packet_hci_event(struct timeval *tv, uint16_t index,
 	event_data->func(data, hdr->plen);
 }
 
-void packet_hci_acldata(struct timeval *tv, uint16_t index, bool in,
-					const void *data, uint16_t size)
+void packet_hci_acldata(struct timeval *tv, struct ucred *cred, uint16_t index,
+				bool in, const void *data, uint16_t size)
 {
 	const struct bt_hci_acl_hdr *hdr = data;
 	uint16_t handle = le16_to_cpu(hdr->handle);
@@ -7909,10 +8971,10 @@ void packet_hci_acldata(struct timeval *tv, uint16_t index, bool in,
 
 	if (size < sizeof(*hdr)) {
 		if (in)
-			print_packet(tv, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, index, '*', COLOR_ERROR,
 				"Malformed ACL Data RX packet", NULL, NULL);
 		else
-			print_packet(tv, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, index, '*', COLOR_ERROR,
 				"Malformed ACL Data TX packet", NULL, NULL);
 		packet_hexdump(data, size);
 		return;
@@ -7924,7 +8986,7 @@ void packet_hci_acldata(struct timeval *tv, uint16_t index, bool in,
 	sprintf(handle_str, "Handle %d", acl_handle(handle));
 	sprintf(extra_str, "flags 0x%2.2x dlen %d", flags, dlen);
 
-	print_packet(tv, index, in ? '>' : '<', COLOR_HCI_ACLDATA,
+	print_packet(tv, cred, index, in ? '>' : '<', COLOR_HCI_ACLDATA,
 				in ? "ACL Data RX" : "ACL Data TX",
 						handle_str, extra_str);
 
@@ -7941,8 +9003,8 @@ void packet_hci_acldata(struct timeval *tv, uint16_t index, bool in,
 	l2cap_packet(index, in, acl_handle(handle), flags, data, size);
 }
 
-void packet_hci_scodata(struct timeval *tv, uint16_t index, bool in,
-					const void *data, uint16_t size)
+void packet_hci_scodata(struct timeval *tv, struct ucred *cred, uint16_t index,
+				bool in, const void *data, uint16_t size)
 {
 	const hci_sco_hdr *hdr = data;
 	uint16_t handle = le16_to_cpu(hdr->handle);
@@ -7951,10 +9013,10 @@ void packet_hci_scodata(struct timeval *tv, uint16_t index, bool in,
 
 	if (size < HCI_SCO_HDR_SIZE) {
 		if (in)
-			print_packet(tv, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, index, '*', COLOR_ERROR,
 				"Malformed SCO Data RX packet", NULL, NULL);
 		else
-			print_packet(tv, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, index, '*', COLOR_ERROR,
 				"Malformed SCO Data TX packet", NULL, NULL);
 		packet_hexdump(data, size);
 		return;
@@ -7966,7 +9028,7 @@ void packet_hci_scodata(struct timeval *tv, uint16_t index, bool in,
 	sprintf(handle_str, "Handle %d", acl_handle(handle));
 	sprintf(extra_str, "flags 0x%2.2x dlen %d", flags, hdr->dlen);
 
-	print_packet(tv, index, in ? '>' : '<', COLOR_HCI_SCODATA,
+	print_packet(tv, cred, index, in ? '>' : '<', COLOR_HCI_SCODATA,
 				in ? "SCO Data RX" : "SCO Data TX",
 						handle_str, extra_str);
 
@@ -8006,10 +9068,10 @@ void packet_todo(void)
 		printf("\t%s\n", event_table[i].str);
 	}
 
-	for (i = 0; subevent_table[i].str; i++) {
-		if (subevent_table[i].func)
+	for (i = 0; le_meta_event_table[i].str; i++) {
+		if (le_meta_event_table[i].func)
 			continue;
 
-		printf("\t%s\n", subevent_table[i].str);
+		printf("\t%s\n", le_meta_event_table[i].str);
 	}
 }
