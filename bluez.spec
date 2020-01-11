@@ -1,7 +1,7 @@
 Summary: Bluetooth utilities
 Name: bluez
-Version: 5.41
-Release: 1%{?dist}
+Version: 5.44
+Release: 2%{?dist}
 License: GPLv2+
 Group: Applications/System
 URL: http://www.bluez.org/
@@ -16,7 +16,6 @@ Patch3: 0001-Allow-using-obexd-without-systemd-in-the-user-sessio.patch
 Patch4: 0001-obex-Use-GLib-helper-function-to-manipulate-paths.patch
 Patch5: 0002-autopair-Don-t-handle-the-iCade.patch
 Patch7: 0004-agent-Assert-possible-infinite-loop.patch
-Patch8: 0001-Remove-experimental-flag-for-BLE.patch
 
 %global _hardened_build 1
 
@@ -38,6 +37,8 @@ Requires: dbus >= 0.60
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
+
+Provides: bluez-obexd
 
 # Dropped in Fedora 20:
 Obsoletes: bluez-alsa < 5.0
@@ -136,7 +137,7 @@ git am -p1 %{patches} < /dev/null
 libtoolize -f -c
 autoreconf -f -i
 %configure --enable-cups --enable-tools --enable-library \
-           --enable-sixaxis --enable-pie \
+           --enable-sixaxis --enable-pie --enable-deprecated \
            --with-systemdsystemunitdir=%{_unitdir} \
            --with-systemduserunitdir=%{_userunitdir}
 make %{?_smp_mflags} V=1
@@ -175,9 +176,11 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 
 %post
 %systemd_post bluetooth.service
+%systemd_user_post obex.service
 
 %preun
 %systemd_preun bluetooth.service
+%systemd_user_preun obex.service
 
 %postun
 %systemd_postun_with_restart bluetooth.service
@@ -187,6 +190,7 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 
 %files
 %doc AUTHORS COPYING ChangeLog README
+%{_bindir}/btattach
 %{_bindir}/ciptool
 %{_bindir}/hcitool
 %{_bindir}/l2ping
@@ -204,6 +208,7 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 %{_bindir}/mpris-proxy
 %{_bindir}/gatttool
 %{_bindir}/rctest
+%{_mandir}/man1/btattach.1.gz
 %{_mandir}/man1/ciptool.1.gz
 %{_mandir}/man1/hcitool.1.gz
 %{_mandir}/man1/rfcomm.1.gz
@@ -246,6 +251,17 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 /lib/udev/rules.d/97-hid2hci.rules
 
 %changelog
+* Mon Mar 27 2017 David Arcari <darcari@redhat.com> 5.44-2
+- added missing updates for sources and .gitignore
+Resolves: #1434581, #1401501
+
+* Tue Mar 21 2017 David Arcari <darcari@redhat.com> 5.44-1
+- Update to 5.44
+- Ship btattach tool
+- Configure systemctl settings for bluez-obex correctly
+- Add Provides: bluez-obexd
+Resolves: #1434581, #1401501
+
 * Fri Aug 5 2016 Don Zickus <dzickus@redhat.com> 5.41-1
 - Update to 5.41
 - obexd fixes to prevent crashes
