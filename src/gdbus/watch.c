@@ -204,30 +204,6 @@ static gboolean remove_match(struct filter_data *data)
 	return TRUE;
 }
 
-static void filter_data_free(struct filter_data *data)
-{
-	GSList *l;
-
-	/* Remove filter if there are no listeners left for the connection */
-	if (filter_data_find(data->connection) == NULL)
-		dbus_connection_remove_filter(data->connection, message_filter,
-									NULL);
-
-	for (l = data->callbacks; l != NULL; l = l->next)
-		g_free(l->data);
-
-	g_slist_free(data->callbacks);
-	g_dbus_remove_watch(data->connection, data->name_watch);
-	g_free(data->name);
-	g_free(data->owner);
-	g_free(data->path);
-	g_free(data->interface);
-	g_free(data->member);
-	g_free(data->argument);
-	dbus_connection_unref(data->connection);
-	g_free(data);
-}
-
 static struct filter_data *filter_data_get(DBusConnection *connection,
 					DBusHandleMessageFunction filter,
 					const char *sender,
@@ -272,7 +248,7 @@ proceed:
 	data->argument = g_strdup(argument);
 
 	if (!add_match(data, filter)) {
-		filter_data_free(data);
+		g_free(data);
 		return NULL;
 	}
 
@@ -299,6 +275,30 @@ static struct filter_callback *filter_data_find_callback(
 	}
 
 	return NULL;
+}
+
+static void filter_data_free(struct filter_data *data)
+{
+	GSList *l;
+
+	/* Remove filter if there are no listeners left for the connection */
+	if (filter_data_find(data->connection) == NULL)
+		dbus_connection_remove_filter(data->connection, message_filter,
+									NULL);
+
+	for (l = data->callbacks; l != NULL; l = l->next)
+		g_free(l->data);
+
+	g_slist_free(data->callbacks);
+	g_dbus_remove_watch(data->connection, data->name_watch);
+	g_free(data->name);
+	g_free(data->owner);
+	g_free(data->path);
+	g_free(data->interface);
+	g_free(data->member);
+	g_free(data->argument);
+	dbus_connection_unref(data->connection);
+	g_free(data);
 }
 
 static void filter_data_call_and_free(struct filter_data *data)
@@ -523,15 +523,14 @@ static DBusHandlerResult message_filter(DBusConnection *connection,
 	member = dbus_message_get_member(message);
 	dbus_message_get_args(message, NULL, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID);
 
-	/* If sender != NULL it is always the owner */
+	/* Sender is always the owner */
+	if (sender == NULL)
+		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
 	for (current = listeners; current != NULL; current = current->next) {
 		data = current->data;
 
 		if (connection != data->connection)
-			continue;
-
-		if (!sender && data->owner)
 			continue;
 
 		if (data->owner && g_str_equal(sender, data->owner) == FALSE)
@@ -704,8 +703,7 @@ guint g_dbus_add_service_watch(DBusConnection *connection, const char *name,
 	if (name == NULL)
 		return 0;
 
-	data = filter_data_get(connection, service_filter,
-				DBUS_SERVICE_DBUS, DBUS_PATH_DBUS,
+	data = filter_data_get(connection, service_filter, NULL, NULL,
 				DBUS_INTERFACE_DBUS, "NameOwnerChanged",
 				name);
 	if (data == NULL)

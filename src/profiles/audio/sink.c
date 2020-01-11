@@ -30,21 +30,20 @@
 #include <stdbool.h>
 #include <errno.h>
 
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+
 #include <glib.h>
 #include <dbus/dbus.h>
-
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
-
-#include "gdbus/gdbus.h"
+#include <gdbus/gdbus.h>
 
 #include "src/log.h"
+
 #include "src/adapter.h"
 #include "src/device.h"
 #include "src/service.h"
 #include "src/error.h"
 #include "src/dbus-common.h"
-#include "src/shared/queue.h"
 
 #include "avdtp.h"
 #include "media.h"
@@ -180,8 +179,8 @@ static void stream_state_changed(struct avdtp_stream *stream,
 }
 
 static void stream_setup_complete(struct avdtp *session, struct a2dp_sep *sep,
-					struct avdtp_stream *stream, int err,
-					void *user_data)
+					struct avdtp_stream *stream,
+					struct avdtp_error *err, void *user_data)
 {
 	struct sink *sink = user_data;
 
@@ -192,7 +191,11 @@ static void stream_setup_complete(struct avdtp *session, struct a2dp_sep *sep,
 
 	avdtp_unref(sink->session);
 	sink->session = NULL;
-	btd_service_connecting_complete(sink->service, err);
+	if (avdtp_error_category(err) == AVDTP_ERRNO
+				&& avdtp_error_posix_errno(err) != EHOSTDOWN)
+		btd_service_connecting_complete(sink->service, -EAGAIN);
+	else
+		btd_service_connecting_complete(sink->service, -EIO);
 }
 
 static void select_complete(struct avdtp *session, struct a2dp_sep *sep,
@@ -217,17 +220,23 @@ failed:
 	sink->session = NULL;
 }
 
-static void discovery_complete(struct avdtp *session, GSList *seps, int err,
-							void *user_data)
+static void discovery_complete(struct avdtp *session, GSList *seps, struct avdtp_error *err,
+				void *user_data)
 {
 	struct sink *sink = user_data;
-	int id;
-
-	sink->connect_id = 0;
+	int id, perr;
 
 	if (err) {
 		avdtp_unref(sink->session);
 		sink->session = NULL;
+
+		perr = -avdtp_error_posix_errno(err);
+		if (perr != -EHOSTDOWN) {
+			if (avdtp_error_category(err) == AVDTP_ERRNO)
+				perr = -EAGAIN;
+			else
+				perr = -EIO;
+		}
 		goto failed;
 	}
 
@@ -236,7 +245,7 @@ static void discovery_complete(struct avdtp *session, GSList *seps, int err,
 	id = a2dp_select_capabilities(sink->session, AVDTP_SEP_TYPE_SINK, NULL,
 						select_complete, sink);
 	if (id == 0) {
-		err = -EIO;
+		perr = -EIO;
 		goto failed;
 	}
 
@@ -244,7 +253,7 @@ static void discovery_complete(struct avdtp *session, GSList *seps, int err,
 	return;
 
 failed:
-	btd_service_connecting_complete(sink->service, err);
+	btd_service_connecting_complete(sink->service, perr);
 	avdtp_unref(sink->session);
 	sink->session = NULL;
 }
@@ -262,9 +271,7 @@ gboolean sink_setup_stream(struct btd_service *service, struct avdtp *session)
 	if (!sink->session)
 		return FALSE;
 
-	sink->connect_id = a2dp_discover(sink->session, discovery_complete,
-								sink);
-	if (sink->connect_id == 0)
+	if (avdtp_discover(sink->session, discovery_complete, sink) < 0)
 		return FALSE;
 
 	return TRUE;
@@ -275,7 +282,7 @@ int sink_connect(struct btd_service *service)
 	struct sink *sink = btd_service_get_user_data(service);
 
 	if (!sink->session)
-		sink->session = a2dp_avdtp_get(btd_service_get_device(service));
+		sink->session = avdtp_get(btd_service_get_device(service));
 
 	if (!sink->session) {
 		DBG("Unable to get a session");
@@ -283,9 +290,6 @@ int sink_connect(struct btd_service *service)
 	}
 
 	if (sink->connect_id > 0 || sink->disconnect_id > 0)
-		return -EBUSY;
-
-	if (sink->state == SINK_STATE_CONNECTING)
 		return -EBUSY;
 
 	if (sink->stream_state >= AVDTP_STATE_OPEN)
@@ -396,12 +400,12 @@ int sink_disconnect(struct btd_service *service)
 
 	/* cancel pending connect */
 	if (sink->connect_id > 0) {
-		avdtp_unref(sink->session);
-		sink->session = NULL;
-
 		a2dp_cancel(sink->connect_id);
 		sink->connect_id = 0;
-		btd_service_disconnecting_complete(sink->service, 0);
+		btd_service_connecting_complete(sink->service, -ECANCELED);
+
+		avdtp_unref(sink->session);
+		sink->session = NULL;
 
 		return 0;
 	}

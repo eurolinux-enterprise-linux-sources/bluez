@@ -28,6 +28,11 @@
 #include "src/shared/util.h"
 #include "src/shared/queue.h"
 
+struct queue_entry {
+	void *data;
+	struct queue_entry *next;
+};
+
 struct queue {
 	int ref_count;
 	struct queue_entry *head;
@@ -58,6 +63,9 @@ struct queue *queue_new(void)
 	struct queue *queue;
 
 	queue = new0(struct queue, 1);
+	if (!queue)
+		return NULL;
+
 	queue->head = NULL;
 	queue->tail = NULL;
 	queue->entries = 0;
@@ -75,16 +83,6 @@ void queue_destroy(struct queue *queue, queue_destroy_func_t destroy)
 	queue_unref(queue);
 }
 
-static struct queue_entry *queue_entry_new(void *data)
-{
-	struct queue_entry *entry;
-
-	entry = new0(struct queue_entry, 1);
-	entry->data = data;
-
-	return entry;
-}
-
 bool queue_push_tail(struct queue *queue, void *data)
 {
 	struct queue_entry *entry;
@@ -92,7 +90,12 @@ bool queue_push_tail(struct queue *queue, void *data)
 	if (!queue)
 		return false;
 
-	entry = queue_entry_new(data);
+	entry = new0(struct queue_entry, 1);
+	if (!entry)
+		return false;
+
+	entry->data = data;
+	entry->next = NULL;
 
 	if (queue->tail)
 		queue->tail->next = entry;
@@ -114,8 +117,11 @@ bool queue_push_head(struct queue *queue, void *data)
 	if (!queue)
 		return false;
 
-	entry = queue_entry_new(data);
+	entry = new0(struct queue_entry, 1);
+	if (!entry)
+		return false;
 
+	entry->data = data;
 	entry->next = queue->head;
 
 	queue->head = entry;
@@ -123,38 +129,6 @@ bool queue_push_head(struct queue *queue, void *data)
 	if (!queue->tail)
 		queue->tail = entry;
 
-	queue->entries++;
-
-	return true;
-}
-
-bool queue_push_after(struct queue *queue, void *entry, void *data)
-{
-	struct queue_entry *qentry, *tmp, *new_entry;
-
-	qentry = NULL;
-
-	if (!queue)
-		return false;
-
-	for (tmp = queue->head; tmp; tmp = tmp->next) {
-		if (tmp->data == entry) {
-			qentry = tmp;
-			break;
-		}
-	}
-
-	if (!qentry)
-		return false;
-
-	new_entry = queue_entry_new(data);
-
-	new_entry->next = qentry->next;
-
-	if (!qentry->next)
-		queue->tail = new_entry;
-
-	qentry->next = new_entry;
 	queue->entries++;
 
 	return true;
@@ -200,6 +174,17 @@ void *queue_peek_tail(struct queue *queue)
 	return queue->tail->data;
 }
 
+static bool queue_find_entry(struct queue *queue, const void *data)
+{
+	struct queue_entry *entry;
+
+	for (entry = queue->head; entry; entry = entry->next)
+		if (entry == data)
+			return true;
+
+	return false;
+}
+
 void queue_foreach(struct queue *queue, queue_foreach_func_t function,
 							void *user_data)
 {
@@ -213,12 +198,15 @@ void queue_foreach(struct queue *queue, queue_foreach_func_t function,
 		return;
 
 	queue_ref(queue);
-	while (entry && queue->head && queue->ref_count > 1) {
-		struct queue_entry *next;
+	while (entry && queue->ref_count > 1) {
+		struct queue_entry *tmp = entry;
 
-		next = entry->next;
-		function(entry->data, user_data);
-		entry = next;
+		entry = tmp->next;
+
+		function(tmp->data, user_data);
+
+		if (!queue_find_entry(queue, entry))
+			break;
 	}
 	queue_unref(queue);
 }
@@ -324,24 +312,35 @@ unsigned int queue_remove_all(struct queue *queue, queue_match_func_t function,
 	entry = queue->head;
 
 	if (function) {
+		struct queue_entry *prev = NULL;
+
 		while (entry) {
-			void *data;
-			unsigned int entries = queue->entries;
+			if (function(entry->data, user_data)) {
+				struct queue_entry *tmp = entry;
 
-			data = queue_remove_if(queue, function, user_data);
-			if (entries == queue->entries)
-				break;
+				if (prev)
+					prev->next = entry->next;
+				else
+					queue->head = entry->next;
 
-			if (destroy)
-				destroy(data);
+				if (!entry->next)
+					queue->tail = prev;
 
-			count++;
+				entry = entry->next;
+
+				if (destroy)
+					destroy(tmp->data);
+
+				free(tmp);
+				count++;
+			} else {
+				prev = entry;
+				entry = entry->next;
+			}
 		}
-	} else {
-		queue->head = NULL;
-		queue->tail = NULL;
-		queue->entries = 0;
 
+		queue->entries -= count;
+	} else {
 		while (entry) {
 			struct queue_entry *tmp = entry;
 
@@ -353,17 +352,13 @@ unsigned int queue_remove_all(struct queue *queue, queue_match_func_t function,
 			free(tmp);
 			count++;
 		}
+
+		queue->head = NULL;
+		queue->tail = NULL;
+		queue->entries = 0;
 	}
 
 	return count;
-}
-
-const struct queue_entry *queue_get_entries(struct queue *queue)
-{
-	if (!queue)
-		return NULL;
-
-	return queue->head;
 }
 
 unsigned int queue_length(struct queue *queue)

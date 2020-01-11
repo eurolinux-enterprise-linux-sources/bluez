@@ -51,7 +51,7 @@ typedef void (*btdev_command_func) (uint16_t opcode,
 				const void *data, uint8_t len,
 				btdev_callback callback, void *user_data);
 
-typedef void (*btdev_send_func) (const struct iovec *iov, int iovlen,
+typedef void (*btdev_send_func) (const void *data, uint16_t len,
 							void *user_data);
 
 typedef bool (*btdev_hook_func) (const void *data, uint16_t len,
@@ -62,7 +62,6 @@ enum btdev_type {
 	BTDEV_TYPE_BREDR,
 	BTDEV_TYPE_LE,
 	BTDEV_TYPE_AMP,
-	BTDEV_TYPE_BREDR20,
 };
 
 enum btdev_hook_type {
@@ -79,10 +78,6 @@ void btdev_destroy(struct btdev *btdev);
 
 const uint8_t *btdev_get_bdaddr(struct btdev *btdev);
 uint8_t *btdev_get_features(struct btdev *btdev);
-
-uint8_t btdev_get_scan_enable(struct btdev *btdev);
-
-uint8_t btdev_get_le_scan_enable(struct btdev *btdev);
 
 void btdev_set_command_handler(struct btdev *btdev, btdev_command_func handler,
 							void *user_data);

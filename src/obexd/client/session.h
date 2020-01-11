@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <glib.h>
+#include <gdbus/gdbus.h>
 
 struct obc_session;
 

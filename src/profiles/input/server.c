@@ -29,16 +29,17 @@
 #include <stdbool.h>
 #include <errno.h>
 
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+
 #include <glib.h>
 #include <dbus/dbus.h>
 
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
-#include "lib/uuid.h"
-
 #include "src/log.h"
+
 #include "src/uuid-helper.h"
 #include "btio/btio.h"
+#include "lib/uuid.h"
 #include "src/adapter.h"
 #include "src/device.h"
 #include "src/profile.h"
@@ -137,10 +138,6 @@ static bool dev_is_sixaxis(const bdaddr_t *src, const bdaddr_t *dst)
 
 	/* DualShock 4 */
 	if (vid == 0x054c && pid == 0x05c4)
-		return true;
-
-	/* Navigation Controller */
-	if (vid == 0x054c && pid == 0x042f)
 		return true;
 
 	return false;

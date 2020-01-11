@@ -23,9 +23,7 @@
 #endif
 
 #include <errno.h>
-
-#include "gdbus/gdbus.h"
-
+#include <gdbus/gdbus.h>
 #include "src/plugin.h"
 #include "manager.h"
 

@@ -32,16 +32,16 @@
 #include <alloca.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <poll.h>
+#include <sys/poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
-#include "lib/hci_lib.h"
-#include "lib/l2cap.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
+#include <bluetooth/hci_lib.h>
+#include <bluetooth/l2cap.h>
 
-#include "src/shared/mainloop.h"
+#include "monitor/mainloop.h"
 
 static bool send_message(const bdaddr_t *src, const bdaddr_t *dst,
 							uint16_t psm)
@@ -228,7 +228,7 @@ static bool find_controllers(void)
 		if (ioctl(fd, HCIGETDEVINFO, (void *) &di) < 0)
 			continue;
 
-		if (((di.type & 0x30) >> 4) != HCI_PRIMARY)
+		if (((di.type & 0x30) >> 4) != HCI_BREDR)
 			continue;
 
 		if (!bacmp(&bdaddr_src, BDADDR_ANY)) {

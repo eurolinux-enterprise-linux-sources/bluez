@@ -258,8 +258,7 @@ static DBusHandlerResult process_message(DBusConnection *connection,
 
 	reply = method->function(connection, message, iface_user_data);
 
-	if (method->flags & G_DBUS_METHOD_FLAG_NOREPLY ||
-					dbus_message_get_no_reply(message)) {
+	if (method->flags & G_DBUS_METHOD_FLAG_NOREPLY) {
 		if (reply != NULL)
 			dbus_message_unref(reply);
 		return DBUS_HANDLER_RESULT_HANDLED;
@@ -635,18 +634,10 @@ static gboolean g_dbus_args_have_signature(const GDBusArgInfo *args,
 
 static void add_pending(struct generic_data *data)
 {
-	guint old_id = data->process_id;
+	if (data->process_id > 0)
+		return;
 
 	data->process_id = g_idle_add(process_changes, data);
-
-	if (old_id > 0) {
-		/*
-		 * If the element already had an old idler, remove the old one,
-		 * no need to re-add it to the pending list.
-		 */
-		g_source_remove(old_id);
-		return;
-	}
 
 	pending = g_slist_append(pending, data);
 }
@@ -1421,10 +1412,7 @@ DBusMessage *g_dbus_create_error_valist(DBusMessage *message, const char *name,
 {
 	char str[1024];
 
-	if (format)
-		vsnprintf(str, sizeof(str), format, args);
-	else
-		str[0] = '\0';
+	vsnprintf(str, sizeof(str), format, args);
 
 	return dbus_message_new_error(message, name, str);
 }
@@ -1542,8 +1530,11 @@ gboolean g_dbus_send_error_valist(DBusConnection *connection,
 					const char *format, va_list args)
 {
 	DBusMessage *error;
+	char str[1024];
 
-	error = g_dbus_create_error_valist(message, name, format, args);
+	vsnprintf(str, sizeof(str), format, args);
+
+	error = dbus_message_new_error(message, name, str);
 	if (error == NULL)
 		return FALSE;
 
@@ -1729,10 +1720,9 @@ static void process_property_changes(struct generic_data *data)
 	}
 }
 
-void g_dbus_emit_property_changed_full(DBusConnection *connection,
+void g_dbus_emit_property_changed(DBusConnection *connection,
 				const char *path, const char *interface,
-				const char *name,
-				GDbusPropertyChangedFlags flags)
+				const char *name)
 {
 	const GDBusPropertyTable *property;
 	struct generic_data *data;
@@ -1770,16 +1760,7 @@ void g_dbus_emit_property_changed_full(DBusConnection *connection,
 	iface->pending_prop = g_slist_prepend(iface->pending_prop,
 						(void *) property);
 
-	if (flags & G_DBUS_PROPERTY_CHANGED_FLAG_FLUSH)
-		process_property_changes(data);
-	else
-		add_pending(data);
-}
-
-void g_dbus_emit_property_changed(DBusConnection *connection, const char *path,
-				const char *interface, const char *name)
-{
-	g_dbus_emit_property_changed_full(connection, path, interface, name, 0);
+	add_pending(data);
 }
 
 gboolean g_dbus_get_properties(DBusConnection *connection, const char *path,
@@ -1834,9 +1815,4 @@ gboolean g_dbus_detach_object_manager(DBusConnection *connection)
 void g_dbus_set_flags(int flags)
 {
 	global_flags = flags;
-}
-
-int g_dbus_get_flags(void)
-{
-	return global_flags;
 }

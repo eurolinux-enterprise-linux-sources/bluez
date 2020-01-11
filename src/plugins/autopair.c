@@ -31,10 +31,8 @@
 #include <unistd.h>
 #include <errno.h>
 
+#include <bluetooth/bluetooth.h>
 #include <glib.h>
-
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
 
 #include "src/plugin.h"
 #include "src/adapter.h"
@@ -174,8 +172,8 @@ static int autopair_init(void)
 	n = read(fd, &seed, sizeof(seed));
 	if (n < (ssize_t) sizeof(seed)) {
 		err = (n == -1) ? -errno : -EIO;
-		error("Failed to read %zu bytes from /dev/urandom: %s (%d)",
-					sizeof(seed), strerror(-err), -err);
+		error("Failed to read %zu bytes from /dev/urandom",
+								sizeof(seed));
 		close(fd);
 		return err;
 	}

@@ -25,7 +25,6 @@
 #include <config.h>
 #endif
 
-#include "lib/bluetooth.h"
 #include "oui.h"
 
 #ifdef HAVE_UDEV_HWDB_NEW

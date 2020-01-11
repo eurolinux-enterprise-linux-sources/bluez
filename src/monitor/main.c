@@ -32,9 +32,7 @@
 #include <string.h>
 #include <getopt.h>
 
-#include "src/shared/mainloop.h"
-#include "src/shared/tty.h"
-
+#include "mainloop.h"
 #include "packet.h"
 #include "lmp.h"
 #include "keys.h"
@@ -62,10 +60,7 @@ static void usage(void)
 		"\t-w, --write <file>     Save traces in btsnoop format\n"
 		"\t-a, --analyze <file>   Analyze traces in btsnoop format\n"
 		"\t-s, --server <socket>  Start monitor server socket\n"
-		"\t-p, --priority <level> Show only priority or lower\n"
 		"\t-i, --index <num>      Show only specified controller\n"
-		"\t-d, --tty <tty>        Read data from TTY\n"
-		"\t-B, --tty-speed <rate> Set TTY speed (default 115200)\n"
 		"\t-t, --time             Show time instead of time offset\n"
 		"\t-T, --date             Show time and date information\n"
 		"\t-S, --sco              Dump SCO traffic\n"
@@ -74,13 +69,10 @@ static void usage(void)
 }
 
 static const struct option main_options[] = {
-	{ "tty",     required_argument, NULL, 'd' },
-	{ "tty-speed", required_argument, NULL, 'B' },
 	{ "read",    required_argument, NULL, 'r' },
 	{ "write",   required_argument, NULL, 'w' },
 	{ "analyze", required_argument, NULL, 'a' },
 	{ "server",  required_argument, NULL, 's' },
-	{ "priority",required_argument, NULL, 'p' },
 	{ "index",   required_argument, NULL, 'i' },
 	{ "time",    no_argument,       NULL, 't' },
 	{ "date",    no_argument,       NULL, 'T' },
@@ -99,8 +91,6 @@ int main(int argc, char *argv[])
 	const char *writer_path = NULL;
 	const char *analyze_path = NULL;
 	const char *ellisys_server = NULL;
-	const char *tty = NULL;
-	unsigned int tty_speed = B115200;
 	unsigned short ellisys_port = 0;
 	const char *str;
 	int exit_status;
@@ -113,22 +103,12 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "d:r:w:a:s:p:i:tTSE:vh",
+		opt = getopt_long(argc, argv, "r:w:a:s:i:tTSE:vh",
 						main_options, NULL);
 		if (opt < 0)
 			break;
 
 		switch (opt) {
-		case 'd':
-			tty= optarg;
-			break;
-		case 'B':
-			tty_speed = tty_get_speed(atoi(optarg));
-			if (!tty_speed) {
-				fprintf(stderr, "Unknown speed: %s\n", optarg);
-				return EXIT_FAILURE;
-			}
-			break;
 		case 'r':
 			reader_path = optarg;
 			break;
@@ -140,9 +120,6 @@ int main(int argc, char *argv[])
 			break;
 		case 's':
 			control_server(optarg);
-			break;
-		case 'p':
-			packet_set_priority(optarg);
 			break;
 		case 'i':
 			if (strlen(optarg) > 3 && !strncmp(optarg, "hci", 3))
@@ -229,10 +206,7 @@ int main(int argc, char *argv[])
 	if (ellisys_server)
 		ellisys_enable(ellisys_server, ellisys_port);
 
-	if (!tty && control_tracing() < 0)
-		return EXIT_FAILURE;
-
-	if (tty && control_tty(tty, tty_speed) < 0)
+	if (control_tracing() < 0)
 		return EXIT_FAILURE;
 
 	exit_status = mainloop_run();

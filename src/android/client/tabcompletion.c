@@ -17,7 +17,6 @@
 
 #include <stdio.h>
 #include <ctype.h>
-#include <string.h>
 #include "if-main.h"
 #include "terminal.h"
 

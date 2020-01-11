@@ -32,20 +32,19 @@
 #include <syslog.h>
 
 #include <glib.h>
+#include <gdbus/gdbus.h>
 
-#include "gdbus/gdbus.h"
-
-#include "obexd/src/log.h"
-#include "obexd/src/manager.h"
+#include "log.h"
 #include "transfer.h"
 #include "session.h"
+#include "manager.h"
 #include "bluetooth.h"
 #include "opp.h"
 #include "ftp.h"
 #include "pbap.h"
 #include "sync.h"
 #include "map.h"
-#include "manager.h"
+#include "obexd/src/manager.h"
 
 #define CLIENT_INTERFACE	"org.bluez.obex.Client1"
 #define ERROR_INTERFACE		"org.bluez.obex.Error"
@@ -158,7 +157,7 @@ static struct obc_session *find_session(const char *path)
 	for (l = sessions; l; l = l->next) {
 		struct obc_session *session = l->data;
 
-		if (g_strcmp0(obc_session_get_path(session), path) == 0)
+		if (g_str_equal(obc_session_get_path(session), path) == TRUE)
 			return session;
 	}
 

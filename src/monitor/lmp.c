@@ -27,7 +27,6 @@
 #endif
 
 #include <stdio.h>
-#include <string.h>
 
 #include "src/shared/util.h"
 #include "display.h"
@@ -55,26 +54,6 @@ static void print_opcode(uint16_t opcode)
 		print_field("Operation: %s (%u)", str, opcode);
 }
 
-static void name_req(const void *data, uint8_t size)
-{
-	const struct bt_lmp_name_req *pdu = data;
-
-	print_field("Offset: %u", pdu->offset);
-}
-
-static void name_rsp(const void *data, uint8_t size)
-{
-	const struct bt_lmp_name_rsp *pdu = data;
-	char str[15];
-
-	memcpy(str, pdu->fragment, 14);
-	str[14] = '\0';
-
-	print_field("Offset: %u", pdu->offset);
-	print_field("Length: %u", pdu->length);
-	print_field("Fragment: %s", str);
-}
-
 static void accepted(const void *data, uint8_t size)
 {
 	const struct bt_lmp_accepted *pdu = data;
@@ -92,13 +71,6 @@ static void not_accepted(const void *data, uint8_t size)
 
 static void clkoffset_req(const void *data, uint8_t size)
 {
-}
-
-static void clkoffset_rsp(const void *data, uint8_t size)
-{
-	const struct bt_lmp_clkoffset_rsp *pdu = data;
-
-	print_field("Clock offset: 0x%4.4x", le16_to_cpu(pdu->offset));
 }
 
 static void detach(const void *data, uint8_t size)
@@ -163,13 +135,6 @@ static void stop_encryption_req(const void *data, uint8_t size)
 {
 }
 
-static void switch_req(const void *data, uint8_t size)
-{
-	const struct bt_lmp_switch_req *pdu = data;
-
-	print_field("Instant: 0x%8.8x", le32_to_cpu(pdu->instant));
-}
-
 static void unsniff_req(const void *data, uint8_t size)
 {
 }
@@ -184,67 +149,6 @@ static void min_power(const void *data, uint8_t size)
 
 static void auto_rate(const void *data, uint8_t size)
 {
-}
-
-static void preferred_rate(const void *data, uint8_t size)
-{
-	const struct bt_lmp_preferred_rate *pdu = data;
-	const char *str;
-
-	str = (pdu->rate & 0x01) ? "do not use FEC" : "use FEC";
-
-	print_field("Basic data rate: %s (0x%02x)", str, pdu->rate & 0x01);
-
-	switch ((pdu->rate & 0x06) >> 1) {
-	case 0:
-		str = "No packet-size preference available";
-		break;
-	case 1:
-		str = "use 1-slot packets";
-		break;
-	case 2:
-		str = "use 3-slot packets";
-		break;
-	case 3:
-		str = "use 5-slot packets";
-		break;
-	}
-
-	print_field("Basic data rate: %s (0x%02x)", str, pdu->rate & 0x06);
-
-	switch ((pdu->rate & 0x11) >> 3) {
-	case 0:
-		str = "use DM1 packets";
-		break;
-	case 1:
-		str = "use 2 Mb/s packets";
-		break;
-	case 2:
-		str = "use 3 MB/s packets";
-		break;
-	case 3:
-		str = "reserved";
-		break;
-	}
-
-	print_field("Enhanced data rate: %s (0x%2.2x)", str, pdu->rate & 0x11);
-
-	switch ((pdu->rate & 0x60) >> 5) {
-	case 0:
-		str = "No packet-size preference available";
-		break;
-	case 1:
-		str = "use 1-slot packets";
-		break;
-	case 2:
-		str = "use 3-slot packets";
-		break;
-	case 3:
-		str = "use 5-slot packets";
-		break;
-	}
-
-	print_field("Enhanced data rate: %s (0x%2.2x)", str, pdu->rate & 0x60);
 }
 
 static void version_req(const void *data, uint8_t size)
@@ -315,14 +219,6 @@ static void use_semi_permanent_key(const void *data, uint8_t size)
 
 static void host_connection_req(const void *data, uint8_t size)
 {
-}
-
-static void slot_offset(const void *data, uint8_t size)
-{
-	const struct bt_lmp_slot_offset *pdu = data;
-
-	print_field("Offset: %u usec", le16_to_cpu(pdu->offset));
-	packet_print_addr("Address", pdu->bdaddr, false);
 }
 
 static void page_scan_mode_req(const void *data, uint8_t size)
@@ -550,7 +446,7 @@ static void channel_classification(const void *data, uint8_t size)
 	for (i = 0; i < 10; i++)
 		sprintf(str + (i * 2), "%2.2x", pdu->classification[i]);
 
-	print_field("Classification: 0x%s", str);
+	print_field("Features: 0x%s", str);
 }
 
 static void pause_encryption_req(const void *data, uint8_t size)
@@ -729,12 +625,12 @@ struct lmp_data {
 };
 
 static const struct lmp_data lmp_table[] = {
-	{  1, "LMP_name_req", name_req, 1, true },
-	{  2, "LMP_name_res", name_rsp, 16, true },
+	{  1, "LMP_name_req" },
+	{  2, "LMP_name_res" },
 	{  3, "LMP_accepted", accepted, 1, true },
 	{  4, "LMP_not_accepted", not_accepted, 2, true },
 	{  5, "LMP_clkoffset_req", clkoffset_req, 0, true },
-	{  6, "LMP_clkoffset_res", clkoffset_rsp, 2, true },
+	{  6, "LMP_clkoffset_res" },
 	{  7, "LMP_detach", detach, 1, true },
 	{  8, "LMP_in_rand" },
 	{  9, "LMP_comb_key" },
@@ -747,7 +643,7 @@ static const struct lmp_data lmp_table[] = {
 	{ 16, "LMP_encryption_key_size_req", encryption_key_size_req, 1, true },
 	{ 17, "LMP_start_encryption_req", start_encryption_req, 16, true },
 	{ 18, "LMP_stop_encryption_req", stop_encryption_req, 0, true },
-	{ 19, "LMP_switch_req", switch_req, 4, true },
+	{ 19, "LMP_switch_req" },
 	{ 20, "LMP_hold" },
 	{ 21, "LMP_hold_req" },
 	{ 22, "LMP_sniff" },
@@ -764,7 +660,7 @@ static const struct lmp_data lmp_table[] = {
 	{ 33, "LMP_max_power", max_power, 0, true },
 	{ 34, "LMP_min_power", min_power, 0, true },
 	{ 35, "LMP_auto_rate", auto_rate, 0, true },
-	{ 36, "LMP_preferred_rate", preferred_rate, 1, true },
+	{ 36, "LMP_preferred_rate" },
 	{ 37, "LMP_version_req", version_req, 5, true },
 	{ 38, "LMP_version_res", version_res, 5, true },
 	{ 39, "LMP_features_req", features_req, 8, true },
@@ -780,7 +676,7 @@ static const struct lmp_data lmp_table[] = {
 	{ 49, "LMP_setup_complete", setup_complete, 0, true },
 	{ 50, "LMP_use_semi_permanent_key", use_semi_permanent_key, 0, true },
 	{ 51, "LMP_host_connection_req", host_connection_req, 0, true },
-	{ 52, "LMP_slot_offset", slot_offset, 8, true },
+	{ 52, "LMP_slot_offset" },
 	{ 53, "LMP_page_mode_req" },
 	{ 54, "LMP_page_scan_mode_req", page_scan_mode_req, 2, true },
 	{ 55, "LMP_supervision_timeout" },
@@ -821,9 +717,6 @@ static const struct lmp_data lmp_table[] = {
 	{ LMP_ESC4(32), "LMP_power_control_res", power_control_res, 1, true },
 	{ LMP_ESC4(33), "LMP_ping_req", ping_req, 0, true },
 	{ LMP_ESC4(34), "LMP_ping_res", ping_res, 0, true },
-	{ LMP_ESC4(35), "LMP_SAM_set_type0" },
-	{ LMP_ESC4(36), "LMP_SAM_define_map" },
-	{ LMP_ESC4(37), "LMP_SAM_switch" },
 	{ }
 };
 
@@ -839,27 +732,19 @@ static const char *get_opcode_str(uint16_t opcode)
 	return NULL;
 }
 
-void lmp_packet(const void *data, uint8_t size, bool padded)
+void lmp_packet(const void *data, uint8_t size)
 {
 	const struct lmp_data *lmp_data = NULL;
 	const char *opcode_color, *opcode_str;
 	uint16_t opcode;
 	uint8_t tid, off;
-	const char *tid_str;
 	int i;
 
 	tid = ((const uint8_t *) data)[0] & 0x01;
 	opcode = (((const uint8_t *) data)[0] & 0xfe) >> 1;
 
-	tid_str = tid == 0x00 ? "Master" : "Slave";
-
 	switch (opcode) {
 	case 127:
-		if (size < 2) {
-			print_text(COLOR_ERROR, "extended opcode too short");
-			packet_hexdump(data, size);
-			return;
-		}
 		opcode = LMP_ESC4(((const uint8_t *) data)[1]);
 		off = 2;
 		break;
@@ -892,19 +777,17 @@ void lmp_packet(const void *data, uint8_t size, bool padded)
 
 	if (opcode & 0xff00)
 		print_indent(6, opcode_color, "", opcode_str, COLOR_OFF,
-				" (%u/%u) %s transaction (%u)",
-				opcode >> 8, opcode & 0xff, tid_str, tid);
+			" (%u/%u) TID %u", opcode >> 8, opcode & 0xff, tid);
 	else
 		print_indent(6, opcode_color, "", opcode_str, COLOR_OFF,
-				" (%u) %s transaction (%d)",
-				opcode, tid_str, tid);
+					" (%u) TID %d", opcode, tid);
 
 	if (!lmp_data || !lmp_data->func) {
 		packet_hexdump(data + off, size - off);
 		return;
 	}
 
-	if (lmp_data->fixed && !padded) {
+	if (lmp_data->fixed) {
 		if (size - off != lmp_data->size) {
 			print_text(COLOR_ERROR, "invalid packet size");
 			packet_hexdump(data + off, size - off);

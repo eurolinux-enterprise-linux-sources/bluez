@@ -19,6 +19,8 @@
  *
  */
 
+#include <gobex/gobex.h>
+
 enum {
 	TEST_ERROR_TIMEOUT,
 	TEST_ERROR_UNEXPECTED,

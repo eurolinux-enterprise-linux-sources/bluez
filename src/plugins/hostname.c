@@ -28,12 +28,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
-
-#include "gdbus/gdbus.h"
+#include <gdbus/gdbus.h>
 
 #include "src/dbus-common.h"
 #include "src/plugin.h"

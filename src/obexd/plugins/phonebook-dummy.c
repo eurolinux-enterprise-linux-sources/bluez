@@ -41,7 +41,7 @@
 #include <libical/vobject.h>
 #include <libical/vcc.h>
 
-#include "obexd/src/log.h"
+#include "log.h"
 #include "phonebook.h"
 
 typedef void (*vcard_func_t) (const char *file, VObject *vo, void *user_data);
@@ -520,6 +520,7 @@ void *phonebook_get_entry(const char *folder, const char *id,
 	struct dummy_data *dummy;
 	char *filename;
 	int fd;
+	guint ret;
 
 	filename = g_build_filename(root_folder, folder, id, NULL);
 
@@ -537,13 +538,13 @@ void *phonebook_get_entry(const char *folder, const char *id,
 	dummy->apparams = params;
 	dummy->fd = fd;
 
-	dummy->id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, read_entry, dummy,
+	ret = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, read_entry, dummy,
 								dummy_free);
 
 	if (err)
 		*err = 0;
 
-	return dummy;
+	return GINT_TO_POINTER(ret);
 }
 
 void *phonebook_create_cache(const char *name, phonebook_entry_cb entry_cb,
@@ -552,7 +553,7 @@ void *phonebook_create_cache(const char *name, phonebook_entry_cb entry_cb,
 	struct cache_query *query;
 	char *foldername;
 	DIR *dp;
-	struct dummy_data *dummy;
+	guint ret;
 
 	foldername = g_build_filename(root_folder, name, NULL);
 	dp = opendir(foldername);
@@ -571,13 +572,11 @@ void *phonebook_create_cache(const char *name, phonebook_entry_cb entry_cb,
 	query->user_data = user_data;
 	query->dp = dp;
 
-	dummy = g_new0(struct dummy_data, 1);
-
-	dummy->id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, create_cache,
-							query, query_free);
+	ret = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, create_cache, query,
+								query_free);
 
 	if (err)
 		*err = 0;
 
-	return dummy;
+	return GINT_TO_POINTER(ret);
 }

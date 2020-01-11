@@ -37,7 +37,6 @@
 #include "lib/sdp_lib.h"
 
 #include "src/shared/util.h"
-#include "src/shared/tester.h"
 #include "src/log.h"
 #include "src/sdpd.h"
 
@@ -78,8 +77,9 @@ struct test_data {
 		};							\
 		static struct test_data data;				\
 		data.mtu = _mtu;					\
-		data.pdu_list = g_memdup(pdus, sizeof(pdus));		\
-		tester_add(name, &data, NULL, test_sdp, NULL);		\
+		data.pdu_list = g_malloc(sizeof(pdus));			\
+		memcpy(data.pdu_list, pdus, sizeof(pdus));		\
+		g_test_add_data_func(name, &data, test_sdp);		\
 	} while (0)
 
 #define define_ss(name, args...) define_test("/TP/SERVER/SS/" name, 48, args)
@@ -106,48 +106,32 @@ struct test_data_de {
 		data.input_data = input;				\
 		data.input_size = sizeof(input);			\
 		data.expected = exp;					\
-		tester_add("/sdp/DE/ATTR/" name, &data,	NULL,		\
-					test_sdp_de_attr, NULL);	\
+		g_test_add_data_func("/sdp/DE/ATTR/" name, &data,	\
+						test_sdp_de_attr);	\
 	} while (0)
 
 struct context {
+	GMainLoop *main_loop;
 	guint server_source;
 	guint client_source;
 	int fd;
+	int mtu;
 	uint8_t cont_data[16];
 	uint8_t cont_size;
 	unsigned int pdu_offset;
-	const struct test_data *data;
+	const struct sdp_pdu *pdu_list;
 };
 
 static void sdp_debug(const char *str, void *user_data)
 {
 	const char *prefix = user_data;
 
-	tester_debug("%s%s\n", prefix, str);
+	g_print("%s%s\n", prefix, str);
 }
 
-static void destroy_context(struct context *context)
+static void context_quit(struct context *context)
 {
-	sdp_svcdb_collect_all(context->fd);
-	sdp_svcdb_reset();
-
-	g_source_remove(context->server_source);
-	g_source_remove(context->client_source);
-
-	g_free(context);
-}
-
-static gboolean context_quit(gpointer user_data)
-{
-	struct context *context = user_data;
-	if (context == NULL)
-		return FALSE;
-
-	destroy_context(context);
-	tester_test_passed();
-
-	return FALSE;
+	g_main_loop_quit(context->main_loop);
 }
 
 static gboolean server_handler(GIOChannel *channel, GIOCondition cond,
@@ -186,9 +170,10 @@ static gboolean server_handler(GIOChannel *channel, GIOCondition cond,
 		return FALSE;
 	}
 
-	util_hexdump('<', buf, len, sdp_debug, "SDP: ");
+	if (g_test_verbose() == TRUE)
+		util_hexdump('<', buf, len, sdp_debug, "SDP: ");
 
-	handle_internal_request(fd, context->data->mtu, buf, len);
+	handle_internal_request(fd, context->mtu, buf, len);
 
 	return TRUE;
 }
@@ -201,7 +186,7 @@ static gboolean send_pdu(gpointer user_data)
 	unsigned char *buf;
 	ssize_t len;
 
-	req_pdu = &context->data->pdu_list[context->pdu_offset];
+	req_pdu = &context->pdu_list[context->pdu_offset];
 
 	pdu_len = req_pdu->raw_size + context->cont_size;
 
@@ -226,7 +211,7 @@ static void context_increment(struct context *context)
 {
 	context->pdu_offset += 2;
 
-	if (!context->data->pdu_list[context->pdu_offset].valid) {
+	if (!context->pdu_list[context->pdu_offset].valid) {
 		context_quit(context);
 		return;
 	}
@@ -243,7 +228,7 @@ static gboolean client_handler(GIOChannel *channel, GIOCondition cond,
 	ssize_t len;
 	int fd;
 
-	rsp_pdu = &context->data->pdu_list[context->pdu_offset + 1];
+	rsp_pdu = &context->pdu_list[context->pdu_offset + 1];
 
 	if (cond & (G_IO_NVAL | G_IO_ERR | G_IO_HUP))
 		return FALSE;
@@ -254,7 +239,8 @@ static gboolean client_handler(GIOChannel *channel, GIOCondition cond,
 	if (len < 0)
 		return FALSE;
 
-	util_hexdump('>', buf, len, sdp_debug, "SDP: ");
+	if (g_test_verbose() == TRUE)
+		util_hexdump('>', buf, len, sdp_debug, "SDP: ");
 
 	g_assert(len > 0);
 	g_assert((size_t) len == rsp_pdu->raw_size + rsp_pdu->cont_len);
@@ -653,11 +639,14 @@ static void register_file_transfer(void)
 	update_db_timestamp();
 }
 
-static struct context *create_context(gconstpointer data)
+static struct context *create_context(void)
 {
 	struct context *context = g_new0(struct context, 1);
 	GIOChannel *channel;
 	int err, sv[2];
+
+	context->main_loop = g_main_loop_new(NULL, FALSE);
+	g_assert(context->main_loop);
 
 	err = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv);
 	g_assert(err == 0);
@@ -689,7 +678,6 @@ static struct context *create_context(gconstpointer data)
 	g_io_channel_unref(channel);
 
 	context->fd = sv[1];
-	context->data = data;
 
 	set_fixed_db_timestamp(0x496f0654);
 
@@ -708,11 +696,34 @@ static struct context *create_context(gconstpointer data)
 	return context;
 }
 
+static void execute_context(struct context *context)
+{
+	g_main_loop_run(context->main_loop);
+
+	sdp_svcdb_collect_all(context->fd);
+	sdp_svcdb_reset();
+
+	g_source_remove(context->server_source);
+	g_source_remove(context->client_source);
+
+	g_main_loop_unref(context->main_loop);
+
+	g_free(context);
+}
+
 static void test_sdp(gconstpointer data)
 {
-	struct context *context = create_context(data);
+	const struct test_data *test = data;
+	struct context *context = create_context();
+
+	context->mtu = test->mtu;
+	context->pdu_list = test->pdu_list;
 
 	g_idle_add(send_pdu, context);
+
+	execute_context(context);
+
+	g_free(test->pdu_list);
 }
 
 static void test_sdp_de_attr(gconstpointer data)
@@ -727,7 +738,8 @@ static void test_sdp_de_attr(gconstpointer data)
 	g_assert_cmpuint(test->input_size, ==, size);
 	g_assert_cmpuint(test->expected.dtd, ==, d->dtd);
 
-	tester_debug("DTD=0x%02x\n", d->dtd);
+	if (g_test_verbose() == TRUE)
+		g_print("DTD=0x%02x\n", d->dtd);
 
 	switch (d->dtd) {
 	case SDP_TEXT_STR8:
@@ -774,14 +786,14 @@ static void test_sdp_de_attr(gconstpointer data)
 	}
 
 	sdp_data_free(d);
-	tester_test_passed();
 }
 
 int main(int argc, char *argv[])
 {
-	tester_init(&argc, &argv);
+	g_test_init(&argc, &argv, NULL);
 
-	__btd_log_init("*", 0);
+	if (g_test_verbose())
+		__btd_log_init("*", 0);
 
 	/*
 	 * Service Search Request
@@ -2810,5 +2822,5 @@ int main(int argc, char *argv[])
 						0x00, 0x00, 0x00, 0x00, 0x00,
 						0x00, 0x00, 0x00, 0x00, 0x00)));
 
-	return tester_run();
+	return g_test_run();
 }

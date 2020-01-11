@@ -31,12 +31,11 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <limits.h>
-#include <stdbool.h>
 
-#include "lib/bluetooth.h"
-#include "lib/l2cap.h"
-#include "lib/sdp.h"
-#include "lib/sdp_lib.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/l2cap.h>
+#include <bluetooth/sdp.h>
+#include <bluetooth/sdp_lib.h>
 
 #include "src/shared/util.h"
 

@@ -40,9 +40,9 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 
-#include <glib.h>
+#include <bluetooth/sdp.h>
 
-#include "lib/sdp.h"
+#include <glib.h>
 
 #include "src/log.h"
 #include "src/uinput.h"
@@ -162,7 +162,6 @@ struct key_pressed {
 };
 
 struct avctp {
-	unsigned int ref;
 	int uinput;
 
 	unsigned int passthrough_id;
@@ -709,47 +708,6 @@ static gboolean process_queue(void *user_data)
 
 }
 
-static struct avctp *avctp_ref(struct avctp *session)
-{
-	__sync_fetch_and_add(&session->ref, 1);
-
-	DBG("%p: ref=%d", session, session->ref);
-
-	return session;
-}
-
-static void avctp_unref(struct avctp *session)
-{
-	DBG("%p: ref=%d", session, session->ref);
-
-	if (__sync_sub_and_fetch(&session->ref, 1))
-		return;
-
-	if (session->browsing)
-		avctp_channel_destroy(session->browsing);
-
-	if (session->control)
-		avctp_channel_destroy(session->control);
-
-	if (session->destroy)
-		session->destroy(session->data);
-
-	g_free(session->handler);
-
-	if (session->key.timer > 0)
-		g_source_remove(session->key.timer);
-
-	if (session->uinput >= 0) {
-		DBG("AVCTP: closing uinput");
-
-		ioctl(session->uinput, UI_DEV_DESTROY);
-		close(session->uinput);
-		session->uinput = -1;
-	}
-
-	g_free(session);
-}
-
 static void control_response(struct avctp_channel *control,
 					struct avctp_header *avctp,
 					struct avc_header *avc,
@@ -775,8 +733,6 @@ static void control_response(struct avctp_channel *control,
 								control);
 	}
 
-	avctp_ref(control->session);
-
 	for (l = control->processed; l; l = l->next) {
 		p = l->data;
 		req = p->data;
@@ -788,15 +744,13 @@ static void control_response(struct avctp_channel *control,
 						avc->subunit_type,
 						operands, operand_count,
 						req->user_data))
-			break;
+			return;
 
 		control->processed = g_slist_remove(control->processed, p);
 		pending_destroy(p, NULL);
 
-		break;
+		return;
 	}
-
-	avctp_unref(control->session);
 }
 
 static void browsing_response(struct avctp_channel *browsing,
@@ -823,8 +777,6 @@ static void browsing_response(struct avctp_channel *browsing,
 								browsing);
 	}
 
-	avctp_ref(browsing->session);
-
 	for (l = browsing->processed; l; l = l->next) {
 		p = l->data;
 		req = p->data;
@@ -834,15 +786,13 @@ static void browsing_response(struct avctp_channel *browsing,
 
 		if (req->func && req->func(browsing->session, operands,
 						operand_count, req->user_data))
-			break;
+			return;
 
 		browsing->processed = g_slist_remove(browsing->processed, p);
 		pending_destroy(p, NULL);
 
-		break;
+		return;
 	}
-
-	avctp_unref(browsing->session);
 }
 
 static gboolean session_browsing_cb(GIOChannel *chan, GIOCondition cond,
@@ -1613,7 +1563,7 @@ struct avctp *avctp_new(int fd, size_t imtu, size_t omtu, uint16_t version)
 	control->watch = g_io_add_watch(session->control->io, cond,
 						(GIOFunc) session_cb, session);
 
-	return avctp_ref(session);
+	return session;
 }
 
 int avctp_connect_browsing(struct avctp *session, int fd, size_t imtu,
@@ -1649,5 +1599,27 @@ void avctp_shutdown(struct avctp *session)
 	if (!session)
 		return;
 
-	avctp_unref(session);
+	if (session->browsing)
+		avctp_channel_destroy(session->browsing);
+
+	if (session->control)
+		avctp_channel_destroy(session->control);
+
+	if (session->destroy)
+		session->destroy(session->data);
+
+	g_free(session->handler);
+
+	if (session->key.timer > 0)
+		g_source_remove(session->key.timer);
+
+	if (session->uinput >= 0) {
+		DBG("AVCTP: closing uinput");
+
+		ioctl(session->uinput, UI_DEV_DESTROY);
+		close(session->uinput);
+		session->uinput = -1;
+	}
+
+	g_free(session);
 }

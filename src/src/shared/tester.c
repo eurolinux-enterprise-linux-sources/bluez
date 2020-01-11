@@ -35,10 +35,6 @@
 
 #include <glib.h>
 
-#ifdef HAVE_VALGRIND_MEMCHECK_H
-#include <valgrind/memcheck.h>
-#endif
-
 #include "src/shared/util.h"
 #include "src/shared/tester.h"
 
@@ -94,7 +90,6 @@ struct test_case {
 	gdouble end_time;
 	unsigned int timeout;
 	unsigned int timeout_id;
-	unsigned int teardown_id;
 	tester_destroy_func_t destroy;
 	void *user_data;
 };
@@ -117,9 +112,6 @@ static void test_destroy(gpointer data)
 
 	if (test->timeout_id > 0)
 		g_source_remove(test->timeout_id);
-
-	if (test->teardown_id > 0)
-		g_source_remove(test->teardown_id);
 
 	if (test->destroy)
 		test->destroy(test->user_data);
@@ -215,6 +207,12 @@ void tester_add_full(const char *name, const void *test_data,
 	}
 
 	test = new0(struct test_case, 1);
+	if (!test) {
+		if (destroy)
+			destroy(user_data);
+		return;
+	}
+
 	test->name = strdup(name);
 	test->result = TEST_RESULT_NOT_RUN;
 	test->stage = TEST_STAGE_INVALID;
@@ -272,7 +270,7 @@ void *tester_get_data(void)
 	return test->user_data;
 }
 
-static int tester_summarize(void)
+static void tester_summarize(void)
 {
 	unsigned int not_run = 0, passed = 0, failed = 0;
 	gdouble execution_time;
@@ -317,29 +315,22 @@ static int tester_summarize(void)
 		COLOR_RED "Failed: %d" COLOR_OFF ", "
 		COLOR_YELLOW "Not Run: %d" COLOR_OFF "\n",
 			not_run + passed + failed, passed,
-			(not_run + passed + failed) ?
-			(float) passed * 100 / (not_run + passed + failed) : 0,
+			(float) passed * 100 / (not_run + passed + failed),
 			failed, not_run);
 
 	execution_time = g_timer_elapsed(test_timer, NULL);
 	printf("Overall execution time: %.3g seconds\n", execution_time);
 
-	return failed;
 }
 
 static gboolean teardown_callback(gpointer user_data)
 {
 	struct test_case *test = user_data;
 
-	test->teardown_id = 0;
 	test->stage = TEST_STAGE_TEARDOWN;
 
 	print_progress(test->name, COLOR_MAGENTA, "teardown");
 	test->teardown_func(test->test_data);
-
-#ifdef HAVE_VALGRIND_MEMCHECK_H
-	VALGRIND_DO_ADDED_LEAK_CHECK;
-#endif
 
 	return FALSE;
 }
@@ -503,7 +494,7 @@ void tester_setup_failed(void)
 	test->post_teardown_func(test->test_data);
 }
 
-static void test_result(enum test_result result)
+void tester_test_passed(void)
 {
 	struct test_case *test;
 
@@ -520,41 +511,33 @@ static void test_result(enum test_result result)
 		test->timeout_id = 0;
 	}
 
-	test->result = result;
-	switch (result) {
-	case TEST_RESULT_PASSED:
-		print_progress(test->name, COLOR_GREEN, "test passed");
-		break;
-	case TEST_RESULT_FAILED:
-		print_progress(test->name, COLOR_RED, "test failed");
-		break;
-	case TEST_RESULT_NOT_RUN:
-		print_progress(test->name, COLOR_YELLOW, "test not run");
-		break;
-	case TEST_RESULT_TIMED_OUT:
-		print_progress(test->name, COLOR_RED, "test timed out");
-		break;
-	}
+	test->result = TEST_RESULT_PASSED;
+	print_progress(test->name, COLOR_GREEN, "test passed");
 
-	if (test->teardown_id > 0)
-		return;
-
-	test->teardown_id = g_idle_add(teardown_callback, test);
-}
-
-void tester_test_passed(void)
-{
-	test_result(TEST_RESULT_PASSED);
+	g_idle_add(teardown_callback, test);
 }
 
 void tester_test_failed(void)
 {
-	test_result(TEST_RESULT_FAILED);
-}
+	struct test_case *test;
 
-void tester_test_abort(void)
-{
-	test_result(TEST_RESULT_NOT_RUN);
+	if (!test_current)
+		return;
+
+	test = test_current->data;
+
+	if (test->stage != TEST_STAGE_RUN)
+		return;
+
+	if (test->timeout_id > 0) {
+		g_source_remove(test->timeout_id);
+		test->timeout_id = 0;
+	}
+
+	test->result = TEST_RESULT_FAILED;
+	print_progress(test->name, COLOR_RED, "test failed");
+
+	g_idle_add(teardown_callback, test);
 }
 
 void tester_teardown_complete(void)
@@ -678,6 +661,9 @@ void tester_wait(unsigned int seconds, tester_wait_func_t func,
 	test = test_current->data;
 
 	wait = new0(struct wait_data, 1);
+	if (!wait)
+		return;
+
 	wait->seconds = seconds;
 	wait->test = test;
 	wait->func = func;
@@ -691,7 +677,7 @@ void tester_wait(unsigned int seconds, tester_wait_func_t func,
 static gboolean signal_handler(GIOChannel *channel, GIOCondition condition,
 							gpointer user_data)
 {
-	static bool terminated = false;
+	static unsigned int __terminated = 0;
 	struct signalfd_siginfo si;
 	ssize_t result;
 	int fd;
@@ -710,10 +696,10 @@ static gboolean signal_handler(GIOChannel *channel, GIOCondition condition,
 	switch (si.ssi_signo) {
 	case SIGINT:
 	case SIGTERM:
-		if (!terminated)
+		if (__terminated == 0)
 			g_main_loop_quit(main_loop);
 
-		terminated = true;
+		__terminated = 1;
 		break;
 	}
 
@@ -814,7 +800,6 @@ void tester_init(int *argc, char ***argv)
 int tester_run(void)
 {
 	guint signal;
-	int ret;
 
 	if (!main_loop)
 		return EXIT_FAILURE;
@@ -833,9 +818,9 @@ int tester_run(void)
 
 	g_main_loop_unref(main_loop);
 
-	ret = tester_summarize();
+	tester_summarize();
 
 	g_list_free_full(test_list, test_destroy);
 
-	return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+	return EXIT_SUCCESS;
 }

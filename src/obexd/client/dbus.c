@@ -24,10 +24,9 @@
 #endif
 
 #include <glib.h>
+#include <gdbus/gdbus.h>
 
-#include "gdbus/gdbus.h"
-
-#include "obexd/src/log.h"
+#include "log.h"
 #include "dbus.h"
 
 static void append_variant(DBusMessageIter *iter,

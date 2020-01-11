@@ -80,12 +80,9 @@ static int read_value(const char *name, const char *attr, const char *format)
 		return -1;
 
 	n = fscanf(file, format, &value);
-	if (n != 1) {
-		fclose(file);
+	if (n != 1)
 		return -1;
-	}
 
-	fclose(file);
 	return value;
 }
 

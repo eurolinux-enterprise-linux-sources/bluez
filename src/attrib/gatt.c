@@ -28,14 +28,12 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-
 #include <glib.h>
-
-#include "lib/sdp.h"
-#include "lib/sdp_lib.h"
-#include "lib/uuid.h"
+#include <bluetooth/sdp.h>
+#include <bluetooth/sdp_lib.h>
 
 #include "src/shared/util.h"
+#include "lib/uuid.h"
 #include "att.h"
 #include "gattrib.h"
 #include "gatt.h"
@@ -43,9 +41,7 @@
 struct discover_primary {
 	int ref;
 	GAttrib *attrib;
-	unsigned int id;
 	bt_uuid_t uuid;
-	uint16_t start;
 	GSList *primaries;
 	gatt_cb_t cb;
 	void *user_data;
@@ -54,10 +50,8 @@ struct discover_primary {
 /* Used for the Included Services Discovery (ISD) procedure */
 struct included_discovery {
 	GAttrib		*attrib;
-	unsigned int	id;
 	int		refs;
 	int		err;
-	uint16_t	start_handle;
 	uint16_t	end_handle;
 	GSList		*includes;
 	gatt_cb_t	cb;
@@ -72,10 +66,8 @@ struct included_uuid_query {
 struct discover_char {
 	int ref;
 	GAttrib *attrib;
-	unsigned int id;
 	bt_uuid_t *uuid;
 	uint16_t end;
-	uint16_t start;
 	GSList *characteristics;
 	gatt_cb_t cb;
 	void *user_data;
@@ -84,9 +76,7 @@ struct discover_char {
 struct discover_desc {
 	int ref;
 	GAttrib *attrib;
-	unsigned int id;
 	bt_uuid_t *uuid;
-	uint16_t start;
 	uint16_t end;
 	GSList *descriptors;
 	gatt_cb_t cb;
@@ -261,25 +251,14 @@ static void primary_by_uuid_cb(guint8 status, const guint8 *ipdu,
 	if (range->end == 0xffff)
 		goto done;
 
-	/*
-	 * If last handle is lower from previous start handle then it is smth
-	 * wrong. Let's stop search, otherwise we might enter infinite loop.
-	 */
-	if (range->end < dp->start) {
-		err = ATT_ECODE_UNLIKELY;
-		goto done;
-	}
-
-	dp->start = range->end + 1;
-
 	buf = g_attrib_get_buffer(dp->attrib, &buflen);
-	oplen = encode_discover_primary(dp->start, 0xffff, &dp->uuid,
+	oplen = encode_discover_primary(range->end + 1, 0xffff, &dp->uuid,
 								buf, buflen);
 
 	if (oplen == 0)
 		goto done;
 
-	g_attrib_send(dp->attrib, dp->id, buf, oplen, primary_by_uuid_cb,
+	g_attrib_send(dp->attrib, 0, buf, oplen, primary_by_uuid_cb,
 			discover_primary_ref(dp), discover_primary_unref);
 	return;
 
@@ -342,25 +321,13 @@ static void primary_all_cb(guint8 status, const guint8 *ipdu, guint16 iplen,
 	att_data_list_free(list);
 	err = 0;
 
-	/*
-	 * If last handle is lower from previous start handle then it is smth
-	 * wrong. Let's stop search, otherwise we might enter infinite loop.
-	 */
-	if (end < dp->start) {
-		err = ATT_ECODE_UNLIKELY;
-		goto done;
-	}
-
-	dp->start = end + 1;
-
 	if (end != 0xffff) {
 		size_t buflen;
 		uint8_t *buf = g_attrib_get_buffer(dp->attrib, &buflen);
-		guint16 oplen = encode_discover_primary(dp->start, 0xffff, NULL,
+		guint16 oplen = encode_discover_primary(end + 1, 0xffff, NULL,
 								buf, buflen);
 
-
-		g_attrib_send(dp->attrib, dp->id, buf, oplen, primary_all_cb,
+		g_attrib_send(dp->attrib, 0, buf, oplen, primary_all_cb,
 						discover_primary_ref(dp),
 						discover_primary_unref);
 
@@ -391,7 +358,6 @@ guint gatt_discover_primary(GAttrib *attrib, bt_uuid_t *uuid, gatt_cb_t func,
 	dp->attrib = g_attrib_ref(attrib);
 	dp->cb = func;
 	dp->user_data = user_data;
-	dp->start = 0x0001;
 
 	if (uuid) {
 		dp->uuid = *uuid;
@@ -399,11 +365,9 @@ guint gatt_discover_primary(GAttrib *attrib, bt_uuid_t *uuid, gatt_cb_t func,
 	} else
 		cb = primary_all_cb;
 
-	dp->id = g_attrib_send(attrib, 0, buf, plen, cb,
+	return g_attrib_send(attrib, 0, buf, plen, cb,
 					discover_primary_ref(dp),
 					discover_primary_unref);
-
-	return dp->id;
 }
 
 static void resolve_included_uuid_cb(uint8_t status, const uint8_t *pdu,
@@ -458,7 +422,7 @@ static guint resolve_included_uuid(struct included_discovery *isd,
 	query->isd = isd_ref(isd);
 	query->included = incl;
 
-	return g_attrib_send(isd->attrib, query->isd->id, buf, oplen,
+	return g_attrib_send(isd->attrib, 0, buf, oplen,
 				resolve_included_uuid_cb, query,
 				inc_query_free);
 }
@@ -495,17 +459,8 @@ static guint find_included(struct included_discovery *isd, uint16_t start)
 	oplen = enc_read_by_type_req(start, isd->end_handle, &uuid,
 							buf, buflen);
 
-	/* If id != 0 it means we are in the middle of include search */
-	if (isd->id)
-		return g_attrib_send(isd->attrib, isd->id, buf, oplen,
-				find_included_cb, isd_ref(isd),
-				(GDestroyNotify) isd_unref);
-
-	/* This is first call from the gattrib user */
-	isd->id = g_attrib_send(isd->attrib, 0, buf, oplen, find_included_cb,
+	return g_attrib_send(isd->attrib, 0, buf, oplen, find_included_cb,
 				isd_ref(isd), (GDestroyNotify) isd_unref);
-
-	return isd->id;
 }
 
 static void find_included_cb(uint8_t status, const uint8_t *pdu, uint16_t len,
@@ -552,19 +507,8 @@ static void find_included_cb(uint8_t status, const uint8_t *pdu, uint16_t len,
 
 	att_data_list_free(list);
 
-	/*
-	 * If last handle is lower from previous start handle then it is smth
-	 * wrong. Let's stop search, otherwise we might enter infinite loop.
-	 */
-	if (last_handle < isd->start_handle) {
-		isd->err = ATT_ECODE_UNLIKELY;
-		goto done;
-	}
-
-	isd->start_handle = last_handle + 1;
-
 	if (last_handle < isd->end_handle)
-		find_included(isd, isd->start_handle);
+		find_included(isd, last_handle + 1);
 
 done:
 	if (isd->err == 0)
@@ -578,7 +522,6 @@ unsigned int gatt_find_included(GAttrib *attrib, uint16_t start, uint16_t end,
 
 	isd = g_new0(struct included_discovery, 1);
 	isd->attrib = g_attrib_ref(attrib);
-	isd->start_handle = start;
 	isd->end_handle = end;
 	isd->cb = func;
 	isd->user_data = user_data;
@@ -591,15 +534,9 @@ static void char_discovered_cb(guint8 status, const guint8 *ipdu, guint16 iplen,
 {
 	struct discover_char *dc = user_data;
 	struct att_data_list *list;
-	unsigned int i, err = 0;
+	unsigned int i, err = ATT_ECODE_ATTR_NOT_FOUND;
 	uint16_t last = 0;
 	uint8_t type;
-
-	/* We have all the characteristic now, lets send it up */
-	if (status == ATT_ECODE_ATTR_NOT_FOUND) {
-		err = dc->characteristics ? 0 : status;
-		goto done;
-	}
 
 	if (status) {
 		err = status;
@@ -646,18 +583,7 @@ static void char_discovered_cb(guint8 status, const guint8 *ipdu, guint16 iplen,
 
 	att_data_list_free(list);
 
-	/*
-	 * If last handle is lower from previous start handle then it is smth
-	 * wrong. Let's stop search, otherwise we might enter infinite loop.
-	 */
-	if (last < dc->start) {
-		err = ATT_ECODE_UNLIKELY;
-		goto done;
-	}
-
-	dc->start = last + 1;
-
-	if (last != 0 && (dc->start < dc->end)) {
+	if (last != 0 && (last + 1 < dc->end)) {
 		bt_uuid_t uuid;
 		guint16 oplen;
 		size_t buflen;
@@ -667,20 +593,20 @@ static void char_discovered_cb(guint8 status, const guint8 *ipdu, guint16 iplen,
 
 		bt_uuid16_create(&uuid, GATT_CHARAC_UUID);
 
-		oplen = enc_read_by_type_req(dc->start, dc->end, &uuid, buf,
+		oplen = enc_read_by_type_req(last + 1, dc->end, &uuid, buf,
 									buflen);
 
 		if (oplen == 0)
 			return;
 
-		g_attrib_send(dc->attrib, dc->id, buf, oplen,
-				char_discovered_cb, discover_char_ref(dc),
-				discover_char_unref);
+		g_attrib_send(dc->attrib, 0, buf, oplen, char_discovered_cb,
+				discover_char_ref(dc), discover_char_unref);
 
 		return;
 	}
 
 done:
+	err = (dc->characteristics ? 0 : err);
 	dc->cb(err, dc->characteristics, dc->user_data);
 }
 
@@ -708,13 +634,10 @@ guint gatt_discover_char(GAttrib *attrib, uint16_t start, uint16_t end,
 	dc->cb = func;
 	dc->user_data = user_data;
 	dc->end = end;
-	dc->start = start;
 	dc->uuid = g_memdup(uuid, sizeof(bt_uuid_t));
 
-	dc->id = g_attrib_send(attrib, 0, buf, plen, char_discovered_cb,
+	return g_attrib_send(attrib, 0, buf, plen, char_discovered_cb,
 				discover_char_ref(dc), discover_char_unref);
-
-	return dc->id;
 }
 
 guint gatt_read_char_by_uuid(GAttrib *attrib, uint16_t start, uint16_t end,
@@ -749,8 +672,6 @@ static void read_long_destroy(gpointer user_data)
 
 	if (__sync_sub_and_fetch(&long_read->ref, 1) > 0)
 		return;
-
-	g_attrib_unref(long_read->attrib);
 
 	if (long_read->buffer != NULL)
 		g_free(long_read->buffer);
@@ -855,7 +776,7 @@ guint gatt_read_char(GAttrib *attrib, uint16_t handle, GAttribResultFunc func,
 	if (long_read == NULL)
 		return 0;
 
-	long_read->attrib = g_attrib_ref(attrib);
+	long_read->attrib = attrib;
 	long_read->func = func;
 	long_read->user_data = user_data;
 	long_read->handle = handle;
@@ -864,10 +785,9 @@ guint gatt_read_char(GAttrib *attrib, uint16_t handle, GAttribResultFunc func,
 	plen = enc_read_req(handle, buf, buflen);
 	id = g_attrib_send(attrib, 0, buf, plen, read_char_helper,
 						long_read, read_long_destroy);
-	if (id == 0) {
-		g_attrib_unref(long_read->attrib);
+	if (id == 0)
 		g_free(long_read);
-	} else {
+	else {
 		__sync_fetch_and_add(&long_read->ref, 1);
 		long_read->id = id;
 	}
@@ -1019,21 +939,17 @@ guint gatt_exchange_mtu(GAttrib *attrib, uint16_t mtu, GAttribResultFunc func,
 	return g_attrib_send(attrib, 0, buf, plen, func, user_data, NULL);
 }
 
+
 static void desc_discovered_cb(guint8 status, const guint8 *ipdu,
 					guint16 iplen, gpointer user_data)
 {
 	struct discover_desc *dd = user_data;
 	struct att_data_list *list;
-	unsigned int i, err = 0;
+	unsigned int i, err = ATT_ECODE_ATTR_NOT_FOUND;
 	guint8 format;
 	uint16_t last = 0xffff;
 	uint8_t type;
 	gboolean uuid_found = FALSE;
-
-	if (status == ATT_ECODE_ATTR_NOT_FOUND) {
-		err = dd->descriptors ? 0 : status;
-		goto done;
-	}
 
 	if (status) {
 		err = status;
@@ -1088,17 +1004,6 @@ static void desc_discovered_cb(guint8 status, const guint8 *ipdu,
 
 	att_data_list_free(list);
 
-	/*
-	 * If last handle is lower from previous start handle then it is smth
-	 * wrong. Let's stop search, otherwise we might enter infinite loop.
-	 */
-	if (last < dd->start) {
-		err = ATT_ECODE_UNLIKELY;
-		goto done;
-	}
-
-	dd->start = last + 1;
-
 	if (last < dd->end && !uuid_found) {
 		guint16 oplen;
 		size_t buflen;
@@ -1106,18 +1011,18 @@ static void desc_discovered_cb(guint8 status, const guint8 *ipdu,
 
 		buf = g_attrib_get_buffer(dd->attrib, &buflen);
 
-		oplen = enc_find_info_req(dd->start, dd->end, buf, buflen);
+		oplen = enc_find_info_req(last + 1, dd->end, buf, buflen);
 		if (oplen == 0)
 			return;
 
-		g_attrib_send(dd->attrib, dd->id, buf, oplen,
-				desc_discovered_cb, discover_desc_ref(dd),
-				discover_desc_unref);
+		g_attrib_send(dd->attrib, 0, buf, oplen, desc_discovered_cb,
+				discover_desc_ref(dd), discover_desc_unref);
 
 		return;
 	}
 
 done:
+	err = (dd->descriptors ? 0 : err);
 	dd->cb(err, dd->descriptors, dd->user_data);
 }
 
@@ -1141,14 +1046,11 @@ guint gatt_discover_desc(GAttrib *attrib, uint16_t start, uint16_t end,
 	dd->attrib = g_attrib_ref(attrib);
 	dd->cb = func;
 	dd->user_data = user_data;
-	dd->start = start;
 	dd->end = end;
 	dd->uuid = g_memdup(uuid, sizeof(bt_uuid_t));
 
-	dd->id = g_attrib_send(attrib, 0, buf, plen, desc_discovered_cb,
+	return g_attrib_send(attrib, 0, buf, plen, desc_discovered_cb,
 				discover_desc_ref(dd), discover_desc_unref);
-
-	return dd->id;
 }
 
 guint gatt_write_cmd(GAttrib *attrib, uint16_t handle, const uint8_t *value,

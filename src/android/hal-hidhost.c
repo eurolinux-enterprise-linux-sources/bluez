@@ -102,16 +102,6 @@ static void handle_virtual_unplug(void *buf, uint16_t len, int fd)
 								ev->status);
 }
 
-static void handle_handshake(void *buf, uint16_t len, int fd)
-{
-#if ANDROID_VERSION >= PLATFORM_VER(5, 0, 0)
-	struct hal_ev_hidhost_handshake *ev = buf;
-
-	if (cbacks->handshake_cb)
-		cbacks->handshake_cb((bt_bdaddr_t *) ev->bdaddr, ev->status);
-#endif
-}
-
 /*
  * handlers will be called from notification thread context,
  * index in table equals to 'opcode - HAL_MINIMUM_EVENT'
@@ -130,7 +120,6 @@ static const struct hal_ipc_handler ev_handlers[] = {
 	/* HAL_EV_HIDHOST_VIRTUAL_UNPLUG */
 	{ handle_virtual_unplug, false,
 				sizeof(struct hal_ev_hidhost_virtual_unplug) },
-	{ handle_handshake, false, sizeof(struct hal_ev_hidhost_handshake) },
 };
 
 static bt_status_t hidhost_connect(bt_bdaddr_t *bd_addr)
@@ -351,7 +340,6 @@ static bt_status_t init(bthh_callbacks_t *callbacks)
 
 	cmd.service_id = HAL_SERVICE_ID_HIDHOST;
 	cmd.mode = HAL_MODE_DEFAULT;
-	cmd.max_clients = 1;
 
 	ret = hal_ipc_cmd(HAL_SERVICE_ID_CORE, HAL_OP_REGISTER_MODULE,
 					sizeof(cmd), &cmd, NULL, NULL, NULL);
@@ -373,14 +361,14 @@ static void cleanup(void)
 	if (!interface_ready())
 		return;
 
+	cbacks = NULL;
+
 	cmd.service_id = HAL_SERVICE_ID_HIDHOST;
 
 	hal_ipc_cmd(HAL_SERVICE_ID_CORE, HAL_OP_UNREGISTER_MODULE,
 					sizeof(cmd), &cmd, NULL, NULL, NULL);
 
 	hal_ipc_unregister(HAL_SERVICE_ID_HIDHOST);
-
-	cbacks = NULL;
 }
 
 static bthh_interface_t hidhost_if = {

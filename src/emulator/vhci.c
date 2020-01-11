@@ -32,12 +32,11 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/uio.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
 
-#include "src/shared/mainloop.h"
+#include "monitor/mainloop.h"
 #include "monitor/bt.h"
 #include "btdev.h"
 #include "vhci.h"
@@ -61,13 +60,12 @@ static void vhci_destroy(void *user_data)
 	free(vhci);
 }
 
-static void vhci_write_callback(const struct iovec *iov, int iovlen,
-							void *user_data)
+static void vhci_write_callback(const void *data, uint16_t len, void *user_data)
 {
 	struct vhci *vhci = user_data;
 	ssize_t written;
 
-	written = writev(vhci->fd, iov, iovlen);
+	written = write(vhci->fd, data, len);
 	if (written < 0)
 		return;
 }
@@ -105,15 +103,15 @@ struct vhci *vhci_open(enum vhci_type type)
 	switch (type) {
 	case VHCI_TYPE_BREDRLE:
 		btdev_type = BTDEV_TYPE_BREDRLE;
-		ctrl_type = HCI_PRIMARY;
+		ctrl_type = HCI_BREDR;
 		break;
 	case VHCI_TYPE_BREDR:
 		btdev_type = BTDEV_TYPE_BREDR;
-		ctrl_type = HCI_PRIMARY;
+		ctrl_type = HCI_BREDR;
 		break;
 	case VHCI_TYPE_LE:
 		btdev_type = BTDEV_TYPE_LE;
-		ctrl_type = HCI_PRIMARY;
+		ctrl_type = HCI_BREDR;
 		break;
 	case VHCI_TYPE_AMP:
 		btdev_type = BTDEV_TYPE_AMP;

@@ -33,14 +33,13 @@
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <inttypes.h>
-#include <wordexp.h>
 
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <glib.h>
+#include <gdbus.h>
 
-#include "gdbus/gdbus.h"
-#include "client/display.h"
+#include <client/display.h>
 
 /* String display constants */
 #define COLORED_NEW	COLOR_GREEN "NEW" COLOR_OFF
@@ -758,7 +757,7 @@ static void send_reply(DBusMessage *message, void *user_data)
 	dbus_error_init(&error);
 
 	if (dbus_set_error_from_message(&error, message) == TRUE) {
-		rl_printf("Failed to send/pull: %s\n", error.name);
+		rl_printf("Failed to send: %s\n", error.name);
 		dbus_error_free(&error);
 		return;
 	}
@@ -789,23 +788,6 @@ static void opp_send(GDBusProxy *proxy, int argc, char *argv[])
 	}
 
 	rl_printf("Attempting to send %s to %s\n", argv[1],
-						g_dbus_proxy_get_path(proxy));
-}
-
-static void opp_pull(GDBusProxy *proxy, int argc, char *argv[])
-{
-	if (argc < 2) {
-		rl_printf("Missing file argument\n");
-		return;
-	}
-
-	if (g_dbus_proxy_method_call(proxy, "PullBusinessCard", send_setup,
-			send_reply, g_strdup(argv[1]), g_free) == FALSE) {
-		rl_printf("Failed to pull\n");
-		return;
-	}
-
-	rl_printf("Attempting to pull %s from %s\n", argv[1],
 						g_dbus_proxy_get_path(proxy));
 }
 
@@ -880,22 +862,6 @@ static void cmd_send(int argc, char *argv[])
 	proxy = find_map(g_dbus_proxy_get_path(default_session));
 	if (proxy) {
 		map_send(proxy, argc, argv);
-		return;
-	}
-
-	rl_printf("Command not supported\n");
-}
-
-static void cmd_pull(int argc, char *argv[])
-{
-	GDBusProxy *proxy;
-
-	if (!check_default_session())
-		return;
-
-	proxy = find_opp(g_dbus_proxy_get_path(default_session));
-	if (proxy) {
-		opp_pull(proxy, argc, argv);
 		return;
 	}
 
@@ -1266,6 +1232,7 @@ static void list_messages_reply(DBusMessage *message, void *user_data)
 {
 	DBusError error;
 	DBusMessageIter iter, array;
+	int ctype;
 
 	dbus_error_init(&error);
 
@@ -1282,8 +1249,8 @@ static void list_messages_reply(DBusMessage *message, void *user_data)
 
 	dbus_message_iter_recurse(&iter, &array);
 
-	while ((dbus_message_iter_get_arg_type(&array)) ==
-						DBUS_TYPE_DICT_ENTRY) {
+	while ((ctype = dbus_message_iter_get_arg_type(&array)) ==
+							DBUS_TYPE_DICT_ENTRY) {
 		DBusMessageIter entry;
 		const char *obj;
 
@@ -2012,8 +1979,6 @@ static const struct {
 	{ "suspend",      "<transfer>", cmd_suspend, "Suspend transfer" },
 	{ "resume",       "<transfer>", cmd_resume, "Resume transfer" },
 	{ "send",         "<file>",   cmd_send, "Send file" },
-	{ "pull",	  "<file>",   cmd_pull,
-					"Pull Vobject & stores in file" },
 	{ "cd",           "<path>",   cmd_cd, "Change current folder" },
 	{ "ls",           "<options>", cmd_ls, "List current folder" },
 	{ "cp",          "<source file> <destination file>",   cmd_cp,
@@ -2065,9 +2030,8 @@ static char **cmd_completion(const char *text, int start, int end)
 
 static void rl_handler(char *input)
 {
-	wordexp_t w;
 	int argc;
-	char **argv;
+	char **argv = NULL;
 	int i;
 
 	if (!input) {
@@ -2081,16 +2045,18 @@ static void rl_handler(char *input)
 	if (!strlen(input))
 		goto done;
 
+	g_strstrip(input);
 	add_history(input);
 
-	if (wordexp(input, &w, WRDE_NOCMD))
+	argv = g_strsplit(input, " ", -1);
+	if (argv == NULL)
 		goto done;
 
-	if (w.we_wordc == 0)
-		goto free_we;
+	for (argc = 0; argv[argc];)
+		argc++;
 
-	argv = w.we_wordv;
-	argc = w.we_wordc;
+	if (argc == 0)
+		goto done;
 
 	for (i = 0; cmd_table[i].cmd; i++) {
 		if (strcmp(argv[0], cmd_table[i].cmd))
@@ -2098,13 +2064,13 @@ static void rl_handler(char *input)
 
 		if (cmd_table[i].func) {
 			cmd_table[i].func(argc, argv);
-			goto free_we;
+			goto done;
 		}
 	}
 
 	if (strcmp(argv[0], "help")) {
 		printf("Invalid command\n");
-		goto free_we;
+		goto done;
 	}
 
 	printf("Available commands:\n");
@@ -2117,9 +2083,8 @@ static void rl_handler(char *input)
 					cmd_table[i].desc ? : "");
 	}
 
-free_we:
-	wordfree(&w);
 done:
+	g_strfreev(argv);
 	free(input);
 }
 

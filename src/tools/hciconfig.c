@@ -39,9 +39,9 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
-#include "lib/hci_lib.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
+#include <bluetooth/hci_lib.h>
 
 #include "src/textfile.h"
 #include "src/shared/util.h"
@@ -69,7 +69,6 @@ static void print_dev_list(int ctl, int flags)
 
 	if (ioctl(ctl, HCIGETDEVLIST, (void *) dl) < 0) {
 		perror("Can't get device list");
-		free(dl);
 		exit(1);
 	}
 
@@ -79,8 +78,6 @@ static void print_dev_list(int ctl, int flags)
 			continue;
 		print_dev_info(ctl, &di);
 	}
-
-	free(dl);
 }
 
 static void print_pkt_type(struct hci_dev_info *di)
@@ -627,9 +624,6 @@ static void cmd_features(int ctl, int hdev, char *opt)
 		exit(1);
 	}
 
-	if (max_page < 1 && (features[6] & LMP_SIMPLE_PAIR))
-		max_page = 1;
-
 	print_dev_hdr(&di);
 	printf("\tFeatures%s: 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x "
 				"0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x\n",
@@ -963,8 +957,6 @@ static void cmd_class(int ctl, int hdev, char *opt)
 			printf("%s, %s\n", major_devices[cls[1] & 0x1f],
 				get_minor_device_name(cls[1] & 0x1f, cls[0] >> 2));
 	}
-
-	hci_close_dev(s);
 }
 
 static void cmd_voice(int ctl, int hdev, char *opt)
@@ -1025,8 +1017,6 @@ static void cmd_voice(int ctl, int hdev, char *opt)
 		}
 		printf("\tAir Coding Format: %s\n", acf[vs & 0x03]);
 	}
-
-	hci_close_dev(s);
 }
 
 static void cmd_delkey(int ctl, int hdev, char *opt)
@@ -1151,7 +1141,7 @@ static void cmd_version(int ctl, int hdev, char *opt)
 	}
 
 	hciver = hci_vertostr(ver.hci_ver);
-	if (((di.type & 0x30) >> 4) == HCI_PRIMARY)
+	if (((di.type & 0x30) >> 4) == HCI_BREDR)
 		lmpver = lmp_vertostr(ver.lmp_ver);
 	else
 		lmpver = pal_vertostr(ver.lmp_ver);
@@ -1161,7 +1151,7 @@ static void cmd_version(int ctl, int hdev, char *opt)
 		"\t%s Version: %s (0x%x)  Subversion: 0x%x\n"
 		"\tManufacturer: %s (%d)\n",
 		hciver ? hciver : "n/a", ver.hci_ver, ver.hci_rev,
-		(((di.type & 0x30) >> 4) == HCI_PRIMARY) ? "LMP" : "PAL",
+		(((di.type & 0x30) >> 4) == HCI_BREDR) ? "LMP" : "PAL",
 		lmpver ? lmpver : "n/a", ver.lmp_ver, ver.lmp_subver,
 		bt_compidtostr(ver.manufacturer), ver.manufacturer);
 
@@ -1466,8 +1456,6 @@ static void cmd_inq_parms(int ctl, int hdev, char *opt)
 		printf("\tInquiry interval: %u slots (%.2f ms), window: %u slots (%.2f ms)\n",
 				interval, (float)interval * 0.625, window, (float)window * 0.625);
 	}
-
-	hci_close_dev(s);
 }
 
 static void cmd_page_parms(int ctl, int hdev, char *opt)
@@ -1539,8 +1527,6 @@ static void cmd_page_parms(int ctl, int hdev, char *opt)
 			interval, (float)interval * 0.625,
 			window, (float)window * 0.625);
 	}
-
-	hci_close_dev(s);
 }
 
 static void cmd_page_to(int ctl, int hdev, char *opt)
@@ -1605,8 +1591,6 @@ static void cmd_page_to(int ctl, int hdev, char *opt)
 		printf("\tPage timeout: %u slots (%.2f ms)\n",
 				timeout, (float)timeout * 0.625);
 	}
-
-	hci_close_dev(s);
 }
 
 static void cmd_afh_mode(int ctl, int hdev, char *opt)
@@ -1640,8 +1624,6 @@ static void cmd_afh_mode(int ctl, int hdev, char *opt)
 		print_dev_hdr(&di);
 		printf("\tAFH mode: %s\n", mode == 1 ? "Enabled" : "Disabled");
 	}
-
-	hci_close_dev(dd);
 }
 
 static void cmd_ssp_mode(int ctl, int hdev, char *opt)
@@ -1676,8 +1658,6 @@ static void cmd_ssp_mode(int ctl, int hdev, char *opt)
 		printf("\tSimple Pairing mode: %s\n",
 			mode == 1 ? "Enabled" : "Disabled");
 	}
-
-	hci_close_dev(dd);
 }
 
 static void print_rev_ericsson(int dd)
@@ -1804,9 +1784,6 @@ static void cmd_revision(int ctl, int hdev, char *opt)
 		printf("\tUnsupported manufacturer\n");
 		break;
 	}
-
-	hci_close_dev(dd);
-
 	return;
 }
 
@@ -1902,7 +1879,7 @@ static void print_dev_info(int ctl, struct hci_dev_info *di)
 	if (all && !hci_test_bit(HCI_RAW, &di->flags)) {
 		print_dev_features(di, 0);
 
-		if (((di->type & 0x30) >> 4) == HCI_PRIMARY) {
+		if (((di->type & 0x30) >> 4) == HCI_BREDR) {
 			print_pkt_type(di);
 			print_link_policy(di);
 			print_link_mode(di);

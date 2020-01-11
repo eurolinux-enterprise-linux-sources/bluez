@@ -26,7 +26,6 @@ struct obc_driver {
 	const char *uuid;
 	void *target;
 	gsize target_len;
-	void *(*supported_features) (struct obc_session *session);
 	int (*probe) (struct obc_session *session);
 	void (*remove) (struct obc_session *session);
 };

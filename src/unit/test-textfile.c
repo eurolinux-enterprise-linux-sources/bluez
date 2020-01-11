@@ -34,7 +34,6 @@
 #include <glib.h>
 
 #include "src/textfile.h"
-#include "src/shared/tester.h"
 
 static const char test_pathname[] = "/tmp/textfile";
 
@@ -80,7 +79,7 @@ done:
 	close(fd);
 }
 
-static void test_pagesize(const void *data)
+static void test_pagesize(void)
 {
 	char key[18], *str;
 	int size;
@@ -88,20 +87,21 @@ static void test_pagesize(const void *data)
 	size = getpagesize();
 	g_assert(size >= 4096);
 
-	tester_debug("System uses a page size of %d bytes\n", size);
+	if (g_test_verbose())
+		g_print("System uses a page size of %d bytes\n", size);
 
 	util_create_pagesize();
 
 	sprintf(key, "11:11:11:11:11:11");
 	str = textfile_get(test_pathname, key);
 
-	tester_debug("%s\n", str);
+	if (g_test_verbose())
+		g_print("%s\n", str);
 
 	g_assert(str == NULL);
-	tester_test_passed();
 }
 
-static void test_delete(const void *data)
+static void test_delete(void)
 {
 	char key[18], value[512], *str;
 
@@ -116,13 +116,13 @@ static void test_delete(const void *data)
 	str = textfile_get(test_pathname, key);
 	g_assert(str != NULL);
 
-	tester_debug("%s\n", str);
+	if (g_test_verbose())
+		g_print("%s\n", str);
 
 	g_free(str);
-	tester_test_passed();
 }
 
-static void test_overwrite(const void *data)
+static void test_overwrite(void)
 {
 	char key[18], value[512], *str;
 
@@ -143,10 +143,10 @@ static void test_overwrite(const void *data)
 
 	str = textfile_get(test_pathname, key);
 
-	tester_debug("%s\n", str);
+	if (g_test_verbose())
+		g_print("%s\n", str);
 
 	g_assert(str == NULL);
-	tester_test_passed();
 }
 
 static void check_entry(char *key, char *value, void *data)
@@ -164,7 +164,7 @@ static void check_entry(char *key, char *value, void *data)
 	g_assert(strlen(value) == len);
 }
 
-static void test_multiple(const void *data)
+static void test_multiple(void)
 {
 	char key[18], value[512], *str;
 	unsigned int i, j, max = 10;
@@ -182,7 +182,8 @@ static void test_multiple(const void *data)
 
 		str = textfile_get(test_pathname, key);
 
-		tester_debug("%s %s\n", key, str);
+		if (g_test_verbose())
+			g_print("%s %s\n", key, str);
 
 		g_assert(str != NULL);
 		g_assert(strcmp(str, value) == 0);
@@ -200,7 +201,8 @@ static void test_multiple(const void *data)
 
 	str = textfile_get(test_pathname, key);
 
-	tester_debug("%s %s\n", key, str);
+	if (g_test_verbose())
+		g_print("%s %s\n", key, str);
 
 	g_assert(str != NULL);
 	g_assert(strcmp(str, value) == 0);
@@ -217,7 +219,8 @@ static void test_multiple(const void *data)
 
 	str = textfile_get(test_pathname, key);
 
-	tester_debug("%s %s\n", key, str);
+	if (g_test_verbose())
+		g_print("%s %s\n", key, str);
 
 	g_assert(str != NULL);
 	g_assert(strcmp(str, value) == 0);
@@ -228,7 +231,8 @@ static void test_multiple(const void *data)
 		sprintf(key, "00:00:00:00:00:%02X", i);
 		str = textfile_get(test_pathname, key);
 
-		tester_debug("%s %s\n", key, str);
+		if (g_test_verbose())
+			g_print("%s %s\n", key, str);
 
 		g_assert(str != NULL);
 
@@ -258,17 +262,16 @@ static void test_multiple(const void *data)
 	g_assert(textfile_del(test_pathname, key) == 0);
 
 	textfile_foreach(test_pathname, check_entry, GUINT_TO_POINTER(max));
-	tester_test_passed();
 }
 
 int main(int argc, char *argv[])
 {
-	tester_init(&argc, &argv);
+	g_test_init(&argc, &argv, NULL);
 
-	tester_add("/textfile/pagesize", NULL, NULL, test_pagesize, NULL);
-	tester_add("/textfile/delete", NULL, NULL, test_delete, NULL);
-	tester_add("/textfile/overwrite", NULL, NULL, test_overwrite, NULL);
-	tester_add("/textfile/multiple", NULL, NULL, test_multiple, NULL);
+	g_test_add_func("/textfile/pagesize", test_pagesize);
+	g_test_add_func("/textfile/delete", test_delete);
+	g_test_add_func("/textfile/overwrite", test_overwrite);
+	g_test_add_func("/textfile/multiple", test_multiple);
 
-	return tester_run();
+	return g_test_run();
 }

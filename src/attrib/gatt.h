@@ -22,6 +22,8 @@
  *
  */
 
+#include <bluetooth/sdp.h>
+
 /*
  * GATT Characteristic Property bit field
  * Reference: Core SPEC 4.1 page 2183 (Table 3.5: Characteristic Properties

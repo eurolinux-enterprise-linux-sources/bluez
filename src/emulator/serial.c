@@ -32,15 +32,13 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 #include <sys/param.h>
 #include <sys/epoll.h>
-#include <sys/uio.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
 
-#include "src/shared/mainloop.h"
+#include "monitor/mainloop.h"
 #include "btdev.h"
 #include "serial.h"
 
@@ -72,13 +70,13 @@ static void serial_destroy(void *user_data)
 	serial->fd = -1;
 }
 
-static void serial_write_callback(const struct iovec *iov, int iovlen,
+static void serial_write_callback(const void *data, uint16_t len,
 							void *user_data)
 {
 	struct serial *serial = user_data;
 	ssize_t written;
 
-	written = writev(serial->fd, iov, iovlen);
+	written = write(serial->fd, data, len);
 	if (written < 0)
 		return;
 }
@@ -161,7 +159,7 @@ static void open_pty(struct serial *serial)
 {
 	enum btdev_type uninitialized_var(type);
 
-	serial->fd = posix_openpt(O_RDWR | O_NOCTTY);
+	serial->fd = getpt();
 	if (serial->fd < 0) {
 		perror("Failed to get master pseudo terminal");
 		return;

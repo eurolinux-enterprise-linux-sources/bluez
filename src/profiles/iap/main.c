@@ -35,8 +35,7 @@
 #include <sys/signalfd.h>
 
 #include <glib.h>
-
-#include "gdbus/gdbus.h"
+#include <gdbus.h>
 
 #define IAP_PATH "/org/bluez/iap"
 

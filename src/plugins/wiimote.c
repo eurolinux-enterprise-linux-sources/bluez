@@ -27,10 +27,8 @@
 
 #include <stdbool.h>
 
+#include <bluetooth/bluetooth.h>
 #include <glib.h>
-
-#include "bluetooth/bluetooth.h"
-#include "bluetooth/sdp.h"
 
 #include "src/plugin.h"
 #include "src/adapter.h"

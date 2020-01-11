@@ -26,10 +26,9 @@
 #endif
 
 #include <unistd.h>
-#include <errno.h>
 #include <sys/socket.h>
 
-#include "src/shared/mainloop.h"
+#include "monitor/mainloop.h"
 #include "src/shared/util.h"
 #include "src/shared/io.h"
 
@@ -160,6 +159,9 @@ struct io *io_new(int fd)
 		return NULL;
 
 	io = new0(struct io, 1);
+	if (!io)
+		return NULL;
+
 	io->fd = fd;
 	io->events = 0;
 	io->close_on_destroy = false;
@@ -190,7 +192,7 @@ void io_destroy(struct io *io)
 int io_get_fd(struct io *io)
 {
 	if (!io)
-		return -ENOTCONN;
+		return -1;
 
 	return io->fd;
 }
@@ -296,23 +298,6 @@ bool io_set_disconnect_handler(struct io *io, io_callback_func_t callback,
 	io->events = events;
 
 	return true;
-}
-
-ssize_t io_send(struct io *io, const struct iovec *iov, int iovcnt)
-{
-	ssize_t ret;
-
-	if (!io || io->fd < 0)
-		return -ENOTCONN;
-
-	do {
-		ret = writev(io->fd, iov, iovcnt);
-	} while (ret < 0 && errno == EINTR);
-
-	if (ret < 0)
-		return -errno;
-
-	return ret;
 }
 
 bool io_shutdown(struct io *io)

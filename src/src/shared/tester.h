@@ -63,7 +63,6 @@ void tester_setup_failed(void);
 
 void tester_test_passed(void);
 void tester_test_failed(void);
-void tester_test_abort(void);
 
 void tester_teardown_complete(void);
 void tester_teardown_failed(void);

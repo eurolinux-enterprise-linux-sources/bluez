@@ -29,23 +29,27 @@
 
 #include <glib.h>
 
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
-#include "lib/sdp_lib.h"
-#include "lib/uuid.h"
+#include <gdbus/gdbus.h>
 
-#include "gdbus/gdbus.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+#include <bluetooth/sdp_lib.h>
 
-#include "btio/btio.h"
 #include "src/adapter.h"
 #include "src/device.h"
+
 #include "src/sdpd.h"
 #include "src/sdp-client.h"
 #include "src/uuid-helper.h"
+
+#include "lib/uuid.h"
+#include "btio/btio.h"
+
 #include "src/log.h"
 #include "src/dbus-common.h"
 
 #include "mcap.h"
+#include "mcap_lib.h"
 #include "hdp_types.h"
 #include "hdp.h"
 #include "hdp_util.h"

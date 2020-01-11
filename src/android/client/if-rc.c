@@ -17,7 +17,6 @@
 
 #include <stdio.h>
 #include <ctype.h>
-#include <string.h>
 
 #include <hardware/bluetooth.h>
 #include <hardware/bt_hh.h>

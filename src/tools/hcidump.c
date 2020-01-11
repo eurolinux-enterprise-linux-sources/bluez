@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
-#include <poll.h>
+#include <sys/poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -145,8 +145,7 @@ static int process_frames(int dev, int sock, int fd, unsigned long flags)
 	struct frame frm;
 	struct pollfd fds[2];
 	int nfds = 0;
-	char *buf;
-	char ctrl[100];
+	char *buf, *ctrl;
 	int len, hdr_size = HCIDUMP_HDR_SIZE;
 
 	if (sock < 0)
@@ -167,6 +166,13 @@ static int process_frames(int dev, int sock, int fd, unsigned long flags)
 	dh = (void *) buf;
 	dp = (void *) buf;
 	frm.data = buf + hdr_size;
+
+	ctrl = malloc(100);
+	if (!ctrl) {
+		free(buf);
+		perror("Can't allocate control buffer");
+		return -1;
+	}
 
 	if (dev == HCI_DEV_NONE)
 		printf("system: ");
@@ -532,13 +538,13 @@ static int open_socket(int dev, unsigned long flags)
 	opt = 1;
 	if (setsockopt(sk, SOL_HCI, HCI_DATA_DIR, &opt, sizeof(opt)) < 0) {
 		perror("Can't enable data direction info");
-		goto fail;
+		return -1;
 	}
 
 	opt = 1;
 	if (setsockopt(sk, SOL_HCI, HCI_TIME_STAMP, &opt, sizeof(opt)) < 0) {
 		perror("Can't enable time stamp");
-		goto fail;
+		return -1;
 	}
 
 	/* Setup filter */
@@ -547,7 +553,7 @@ static int open_socket(int dev, unsigned long flags)
 	hci_filter_all_events(&flt);
 	if (setsockopt(sk, SOL_HCI, HCI_FILTER, &flt, sizeof(flt)) < 0) {
 		perror("Can't set filter");
-		goto fail;
+		return -1;
 	}
 
 	/* Bind socket to the HCI device */
@@ -557,14 +563,10 @@ static int open_socket(int dev, unsigned long flags)
 	if (bind(sk, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
 		printf("Can't attach to device hci%d. %s(%d)\n",
 					dev, strerror(errno), errno);
-		goto fail;
+		return -1;
 	}
 
 	return sk;
-
-fail:
-	close(sk);
-	return -1;
 }
 
 static struct {

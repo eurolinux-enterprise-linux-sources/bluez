@@ -25,7 +25,6 @@
 #include <stdlib.h>
 #include <alloca.h>
 #include <byteswap.h>
-#include <string.h>
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define le16_to_cpu(val) (val)
@@ -58,18 +57,18 @@
 #endif
 
 #define get_unaligned(ptr)			\
-__extension__ ({				\
+({						\
 	struct __attribute__((packed)) {	\
-		__typeof__(*(ptr)) __v;		\
-	} *__p = (__typeof__(__p)) (ptr);	\
+		typeof(*(ptr)) __v;		\
+	} *__p = (typeof(__p)) (ptr);		\
 	__p->__v;				\
 })
 
 #define put_unaligned(val, ptr)			\
 do {						\
 	struct __attribute__((packed)) {	\
-		__typeof__(*(ptr)) __v;		\
-	} *__p = (__typeof__(__p)) (ptr);	\
+		typeof(*(ptr)) __v;		\
+	} *__p = (typeof(__p)) (ptr);		\
 	__p->__v = (val);			\
 } while (0)
 
@@ -79,20 +78,9 @@ do {						\
 #define PTR_TO_INT(p) ((int) ((intptr_t) (p)))
 #define INT_TO_PTR(u) ((void *) ((intptr_t) (u)))
 
-#define new0(type, count)			\
-	(type *) (__extension__ ({		\
-		size_t __n = (size_t) (count);	\
-		size_t __s = sizeof(type);	\
-		void *__p;			\
-		__p = btd_malloc(__n * __s);	\
-		memset(__p, 0, __n * __s);	\
-		__p;				\
-	}))
-
+#define new0(t, n) ((t*) calloc((n), sizeof(t)))
 #define newa(t, n) ((t*) alloca(sizeof(t)*(n)))
 #define malloc0(n) (calloc((n), 1))
-
-void *btd_malloc(size_t size);
 
 typedef void (*util_debug_func_t)(const char *str, void *user_data);
 
@@ -105,17 +93,14 @@ void util_hexdump(const char dir, const unsigned char *buf, size_t len,
 
 unsigned char util_get_dt(const char *parent, const char *name);
 
-uint8_t util_get_uid(unsigned int *bitmap, uint8_t max);
-void util_clear_uid(unsigned int *bitmap, uint8_t id);
-
-static inline int8_t get_s8(const void *ptr)
+static inline void bswap_128(const void *src, void *dst)
 {
-	return *((int8_t *) ptr);
-}
+	const uint8_t *s = src;
+	uint8_t *d = dst;
+	int i;
 
-static inline uint8_t get_u8(const void *ptr)
-{
-	return *((uint8_t *) ptr);
+	for (i = 0; i < 16; i++)
+		d[15 - i] = s[i];
 }
 
 static inline uint16_t get_le16(const void *ptr)

@@ -36,8 +36,7 @@
 
 #include <dbus/dbus.h>
 #include <glib.h>
-
-#include "gdbus/gdbus.h"
+#include <gdbus/gdbus.h>
 
 #define BLUEZ_BUS_NAME "org.bluez"
 #define BLUEZ_PATH "/org/bluez"
@@ -406,7 +405,7 @@ static DBusHandlerResult player_message(DBusConnection *conn,
 done:
 	dbus_message_unref(copy);
 
-	return DBUS_HANDLER_RESULT_HANDLED;
+	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
 static struct player *find_player_by_bus_name(const char *name)

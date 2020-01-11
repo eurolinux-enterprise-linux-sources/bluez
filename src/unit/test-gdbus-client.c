@@ -26,16 +26,14 @@
 #endif
 
 #include <glib.h>
-
-#include "gdbus/gdbus.h"
-
-#include "src/shared/tester.h"
+#include <gdbus.h>
 
 #define SERVICE_NAME "org.bluez.unit.test-gdbus-client"
 #define SERVICE_NAME1 "org.bluez.unit.test-gdbus-client1"
 #define SERVICE_PATH "/org/bluez/unit/test_gdbus_client"
 
 struct context {
+	GMainLoop *main_loop;
 	DBusConnection *dbus_conn;
 	GDBusClient *dbus_client;
 	GDBusProxy *proxy;
@@ -61,18 +59,26 @@ static struct context *create_context(void)
 	struct context *context = g_new0(struct context, 1);
 	DBusError err;
 
+	context->main_loop = g_main_loop_new(NULL, FALSE);
+	if (context->main_loop == NULL) {
+		g_free(context);
+		return NULL;
+	}
+
 	dbus_error_init(&err);
 
 	context->dbus_conn = g_dbus_setup_private(DBUS_BUS_SESSION,
 							SERVICE_NAME, &err);
 	if (context->dbus_conn == NULL) {
 		if (dbus_error_is_set(&err)) {
-			tester_debug("D-Bus setup failed: %s", err.message);
+			if (g_test_verbose())
+				g_printerr("D-Bus setup failed: %s\n",
+								err.message);
 			dbus_error_free(&err);
 		}
 
+		g_main_loop_unref(context->main_loop);
 		g_free(context);
-		tester_test_abort();
 		return NULL;
 	}
 
@@ -90,19 +96,16 @@ static void destroy_context(struct context *context)
 	if (context == NULL)
 		return;
 
-	tester_test_passed();
-
 	if (context->timeout_source > 0)
 		g_source_remove(context->timeout_source);
 
 	g_dbus_detach_object_manager(context->dbus_conn);
 
-	g_dbus_unregister_interface(context->dbus_conn,
-					SERVICE_PATH, SERVICE_NAME);
-
 	dbus_connection_flush(context->dbus_conn);
 	dbus_connection_close(context->dbus_conn);
 	dbus_connection_unref(context->dbus_conn);
+
+	g_main_loop_unref(context->main_loop);
 
 	g_free(context->data);
 	g_free(context);
@@ -112,7 +115,8 @@ static gboolean timeout_handler(gpointer user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("timeout triggered");
+	if (g_test_verbose())
+		g_print("timeout triggered\n");
 
 	context->timeout_source = 0;
 
@@ -125,7 +129,8 @@ static void connect_handler(DBusConnection *connection, void *user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("service connected");
+	if (g_test_verbose())
+		g_print("service connected\n");
 
 	g_dbus_client_unref(context->dbus_client);
 }
@@ -134,12 +139,13 @@ static void disconnect_handler(DBusConnection *connection, void *user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("service disconnected");
+	if (g_test_verbose())
+		g_print("service disconnected\n");
 
-	destroy_context(context);
+	g_main_loop_quit(context->main_loop);
 }
 
-static void simple_client(const void *data)
+static void simple_client(void)
 {
 	struct context *context = create_context();
 
@@ -153,9 +159,13 @@ static void simple_client(const void *data)
 						connect_handler, context);
 	g_dbus_client_set_disconnect_watch(context->dbus_client,
 						disconnect_handler, context);
+
+	g_main_loop_run(context->main_loop);
+
+	destroy_context(context);
 }
 
-static void client_connect_disconnect(const void *data)
+static void client_connect_disconnect(void)
 {
 	struct context *context = create_context();
 
@@ -176,6 +186,13 @@ static void client_connect_disconnect(const void *data)
 
 	context->timeout_source = g_timeout_add_seconds(10, timeout_handler,
 								context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void append_variant(DBusMessageIter *iter, int type, void *val)
@@ -238,7 +255,9 @@ static void proxy_get_dict(GDBusProxy *proxy, void *user_data)
 	const char *string;
 	dbus_bool_t boolean;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "Dict", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY);
@@ -287,7 +306,7 @@ static void proxy_get_dict(GDBusProxy *proxy, void *user_data)
 	g_dbus_client_unref(context->dbus_client);
 }
 
-static void client_get_dict_property(const void *data)
+static void client_get_dict_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable dict_properties[] = {
@@ -310,6 +329,13 @@ static void client_get_dict_property(const void *data)
 						disconnect_handler, context);
 	g_dbus_client_set_proxy_handlers(context->dbus_client, proxy_get_dict,
 						NULL, NULL, context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void proxy_get_string(GDBusProxy *proxy, void *user_data)
@@ -318,18 +344,15 @@ static void proxy_get_string(GDBusProxy *proxy, void *user_data)
 	DBusMessageIter iter;
 	const char *string;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "String", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING);
 
-	if (context->proxy) {
-		g_assert(context->proxy == proxy);
-		g_dbus_proxy_unref(context->proxy);
-	}
-
 	dbus_message_iter_get_basic(&iter, &string);
-	g_assert_cmpstr(string, ==, "value");
+	g_assert(g_strcmp0(string, "value") == 0);
 
 	g_dbus_client_unref(context->dbus_client);
 }
@@ -344,7 +367,7 @@ static gboolean get_string(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
-static void client_get_string_property(const void *data)
+static void client_get_string_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -368,6 +391,13 @@ static void client_get_string_property(const void *data)
 						disconnect_handler, context);
 	g_dbus_client_set_proxy_handlers(context->dbus_client, proxy_get_string,
 						NULL, NULL, context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void proxy_get_boolean(GDBusProxy *proxy, void *user_data)
@@ -376,7 +406,9 @@ static void proxy_get_boolean(GDBusProxy *proxy, void *user_data)
 	DBusMessageIter iter;
 	dbus_bool_t value;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "Boolean", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_BOOLEAN);
@@ -397,7 +429,7 @@ static gboolean get_boolean(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
-static void client_get_boolean_property(const void *data)
+static void client_get_boolean_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable boolean_properties[] = {
@@ -421,6 +453,13 @@ static void client_get_boolean_property(const void *data)
 						NULL, NULL, context);
 	g_dbus_client_set_disconnect_watch(context->dbus_client,
 						disconnect_handler, context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void proxy_get_array(GDBusProxy *proxy, void *user_data)
@@ -429,7 +468,9 @@ static void proxy_get_array(GDBusProxy *proxy, void *user_data)
 	DBusMessageIter iter, entry;
 	const char *value1, *value2;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "Array", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY);
@@ -465,7 +506,7 @@ static gboolean get_array(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
-static void client_get_array_property(const void *data)
+static void client_get_array_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable array_properties[] = {
@@ -488,6 +529,13 @@ static void client_get_array_property(const void *data)
 						NULL, NULL, context);
 	g_dbus_client_set_disconnect_watch(context->dbus_client,
 						disconnect_handler, context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void proxy_get_uint64(GDBusProxy *proxy, void *user_data)
@@ -496,7 +544,9 @@ static void proxy_get_uint64(GDBusProxy *proxy, void *user_data)
 	DBusMessageIter iter;
 	guint64 value;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "Number", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_UINT64);
@@ -517,7 +567,7 @@ static gboolean get_uint64(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
-static void client_get_uint64_property(const void *data)
+static void client_get_uint64_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable uint64_properties[] = {
@@ -541,6 +591,13 @@ static void client_get_uint64_property(const void *data)
 						NULL, NULL, context);
 	g_dbus_client_set_disconnect_watch(context->dbus_client,
 						disconnect_handler, context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void property_set_success(const DBusError *err, void *user_data)
@@ -553,7 +610,9 @@ static void proxy_set_string(GDBusProxy *proxy, void *user_data)
 	DBusMessageIter iter;
 	const char *string;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_get_property(proxy, "String", &iter));
 	g_assert(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING);
@@ -574,7 +633,8 @@ static void property_string_changed(GDBusProxy *proxy, const char *name,
 	struct context *context = user_data;
 	const char *string;
 
-	tester_debug("property %s changed", name);
+	if (g_test_verbose())
+		g_print("property %s changed\n", name);
 
 	g_assert(g_strcmp0(name, "String") == 0);
 	g_assert(dbus_message_iter_get_arg_type(iter) == DBUS_TYPE_STRING);
@@ -606,7 +666,7 @@ static void set_string(const GDBusPropertyTable *property,
 	g_dbus_pending_property_success(id);
 }
 
-static void client_set_string_property(const void *data)
+static void client_set_string_property(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -631,6 +691,13 @@ static void client_set_string_property(const void *data)
 	g_dbus_client_set_proxy_handlers(context->dbus_client, proxy_set_string,
 						NULL, property_string_changed,
 						context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static gboolean string_exists(const GDBusPropertyTable *property, void *data)
@@ -644,7 +711,8 @@ static gboolean timeout_test(gpointer user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("timeout triggered");
+	if (g_test_verbose())
+		g_print("timeout triggered\n");
 
 	context->timeout_source = 0;
 
@@ -673,14 +741,16 @@ static void proxy_string_changed(GDBusProxy *proxy, void *user_data)
 	struct context *context = user_data;
 	DBusMessageIter iter;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(!g_dbus_proxy_get_property(proxy, "String", &iter));
 
 	g_idle_add(emit_string_change, context);
 }
 
-static void client_string_changed(const void *data)
+static void client_string_changed(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -705,6 +775,13 @@ static void client_string_changed(const void *data)
 						proxy_string_changed, NULL,
 						property_string_changed,
 						context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void property_check_order(const DBusError *err, void *user_data)
@@ -729,7 +806,9 @@ static void proxy_check_order(GDBusProxy *proxy, void *user_data)
 	struct context *context = user_data;
 	const char *string;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	context->proxy = proxy;
 	string = "value1";
@@ -739,7 +818,7 @@ static void proxy_check_order(GDBusProxy *proxy, void *user_data)
 					NULL));
 }
 
-static void client_check_order(const void *data)
+static void client_check_order(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -764,22 +843,32 @@ static void client_check_order(const void *data)
 	g_dbus_client_set_proxy_handlers(context->dbus_client,
 						proxy_check_order, NULL, NULL,
 						context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(context->dbus_conn,
+					SERVICE_PATH, SERVICE_NAME);
+
+	destroy_context(context);
 }
 
 static void proxy_removed(GDBusProxy *proxy, void *user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("proxy removed");
+	if (g_test_verbose())
+		g_print("proxy removed\n");
 
-	destroy_context(context);
+	g_main_loop_quit(context->main_loop);
 }
 
 static void proxy_set_removed(GDBusProxy *proxy, void *user_data)
 {
 	struct context *context = user_data;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_set_removed_watch(proxy, proxy_removed, context));
 
@@ -790,7 +879,7 @@ static void proxy_set_removed(GDBusProxy *proxy, void *user_data)
 								SERVICE_NAME);
 }
 
-static void client_proxy_removed(const void *data)
+static void client_proxy_removed(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -812,41 +901,10 @@ static void client_proxy_removed(const void *data)
 	g_dbus_client_set_proxy_handlers(context->dbus_client,
 						proxy_set_removed, NULL, NULL,
 						context);
-}
 
-static void client_no_object_manager(const void *data)
-{
-	struct context *context = create_context();
-	DBusMessageIter iter;
-	static const GDBusPropertyTable string_properties[] = {
-		{ "String", "s", get_string, set_string, string_exists },
-		{ },
-	};
+	g_main_loop_run(context->main_loop);
 
-	if (context == NULL)
-		return;
-
-	context->data = g_strdup("value");
-
-	g_dbus_register_interface(context->dbus_conn,
-				SERVICE_PATH, SERVICE_NAME,
-				methods, signals, string_properties,
-				context, NULL);
-
-	context->dbus_client = g_dbus_client_new_full(context->dbus_conn,
-						SERVICE_NAME, SERVICE_PATH,
-						NULL);
-
-	g_dbus_client_set_disconnect_watch(context->dbus_client,
-						disconnect_handler, context);
-
-	context->proxy = g_dbus_proxy_new(context->dbus_client, SERVICE_PATH,
-								SERVICE_NAME);
-
-	g_dbus_client_set_proxy_handlers(context->dbus_client, proxy_get_string,
-						NULL, NULL, context);
-
-	g_assert(!g_dbus_proxy_get_property(context->proxy, "String", &iter));
+	destroy_context(context);
 }
 
 static void proxy_force_disconnect(GDBusProxy *proxy, void *user_data)
@@ -854,24 +912,21 @@ static void proxy_force_disconnect(GDBusProxy *proxy, void *user_data)
 	struct context *context = user_data;
 	DBusConnection *conn = context->data;
 
-	tester_debug("proxy %s found", g_dbus_proxy_get_interface(proxy));
+	if (g_test_verbose())
+		g_print("proxy %s found\n",
+					g_dbus_proxy_get_interface(proxy));
 
 	g_assert(g_dbus_proxy_set_removed_watch(proxy, proxy_removed, context));
 
 	context->timeout_source = g_timeout_add_seconds(2, timeout_test,
 								context);
 
-	g_dbus_detach_object_manager(conn);
-
-	g_dbus_unregister_interface(conn, SERVICE_PATH, SERVICE_NAME1);
-
 	dbus_connection_flush(conn);
 	dbus_connection_close(conn);
-	dbus_connection_unref(conn);
 	context->data = NULL;
 }
 
-static void client_force_disconnect(const void *data)
+static void client_force_disconnect(void)
 {
 	struct context *context = create_context();
 	DBusConnection *conn;
@@ -901,6 +956,14 @@ static void client_force_disconnect(const void *data)
 	g_dbus_client_set_proxy_handlers(context->dbus_client,
 					proxy_force_disconnect, NULL, NULL,
 					context);
+
+	g_main_loop_run(context->main_loop);
+
+	g_dbus_unregister_interface(conn, SERVICE_PATH, SERVICE_NAME1);
+	g_dbus_detach_object_manager(conn);
+	dbus_connection_unref(conn);
+
+	destroy_context(context);
 }
 
 static void client_ready_watch(GDBusClient *client, void *user_data)
@@ -921,10 +984,10 @@ static void proxy_added(GDBusProxy *proxy, void *user_data)
 	 */
 	g_assert(context->client_ready == FALSE);
 
-	destroy_context(context);
+	g_main_loop_quit(context->main_loop);
 }
 
-static void client_ready(const void *data)
+static void client_ready(void)
 {
 	struct context *context = create_context();
 	static const GDBusPropertyTable string_properties[] = {
@@ -947,51 +1010,50 @@ static void client_ready(const void *data)
 								context);
 	g_dbus_client_set_proxy_handlers(context->dbus_client,
 						proxy_added, NULL, NULL, context);
+
+	g_main_loop_run(context->main_loop);
+
+	destroy_context(context);
 }
 
 int main(int argc, char *argv[])
 {
-	tester_init(&argc, &argv);
+	g_test_init(&argc, &argv, NULL);
 
-	tester_add("/gdbus/simple_client", NULL, NULL, simple_client, NULL);
+	g_test_add_func("/gdbus/simple_client", simple_client);
 
-	tester_add("/gdbus/client_connect_disconnect", NULL, NULL,
-					client_connect_disconnect, NULL);
+	g_test_add_func("/gdbus/client_connect_disconnect",
+						client_connect_disconnect);
 
-	tester_add("/gdbus/client_get_string_property", NULL, NULL,
-					client_get_string_property, NULL);
+	g_test_add_func("/gdbus/client_get_string_property",
+						client_get_string_property);
 
-	tester_add("/gdbus/client_get_boolean_property", NULL, NULL,
-					client_get_boolean_property, NULL);
+	g_test_add_func("/gdbus/client_get_boolean_property",
+						client_get_boolean_property);
 
-	tester_add("/gdbus/client_get_uint64_property", NULL, NULL,
-					client_get_uint64_property, NULL);
+	g_test_add_func("/gdbus/client_get_uint64_property",
+						client_get_uint64_property);
 
-	tester_add("/gdbus/client_get_array_property", NULL, NULL,
-					client_get_array_property, NULL);
+	g_test_add_func("/gdbus/client_get_array_property",
+						client_get_array_property);
 
-	tester_add("/gdbus/client_get_dict_property", NULL, NULL,
-					client_get_dict_property, NULL);
+	g_test_add_func("/gdbus/client_get_dict_property",
+						client_get_dict_property);
 
-	tester_add("/gdbus/client_set_string_property", NULL, NULL,
-					client_set_string_property, NULL);
+	g_test_add_func("/gdbus/client_set_string_property",
+						client_set_string_property);
 
-	tester_add("/gdbus/client_string_changed", NULL, NULL,
-					client_string_changed, NULL);
+	g_test_add_func("/gdbus/client_string_changed",
+						client_string_changed);
 
-	tester_add("/gdbus/client_check_order", NULL, NULL, client_check_order,
-					NULL);
+	g_test_add_func("/gdbus/client_check_order", client_check_order);
 
-	tester_add("/gdbus/client_proxy_removed", NULL, NULL,
-					client_proxy_removed, NULL);
+	g_test_add_func("/gdbus/client_proxy_removed", client_proxy_removed);
 
-	tester_add("/gdbus/client_no_object_manager", NULL, NULL,
-					client_no_object_manager, NULL);
+	g_test_add_func("/gdbus/client_force_disconnect",
+						client_force_disconnect);
 
-	tester_add("/gdbus/client_force_disconnect", NULL, NULL,
-					client_force_disconnect, NULL);
+	g_test_add_func("/gdbus/client_ready", client_ready);
 
-	tester_add("/gdbus/client_ready", NULL, NULL, client_ready, NULL);
-
-	return tester_run();
+	return g_test_run();
 }

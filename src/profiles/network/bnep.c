@@ -36,15 +36,15 @@
 #include <net/if.h>
 #include <linux/sockios.h>
 
-#include <glib.h>
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/l2cap.h>
+#include <bluetooth/bnep.h>
 
-#include "lib/bluetooth.h"
-#include "lib/l2cap.h"
-#include "lib/bnep.h"
-#include "lib/uuid.h"
+#include <glib.h>
 
 #include "src/log.h"
 #include "src/shared/util.h"
+#include "lib/uuid.h"
 #include "btio/btio.h"
 
 #include "bnep.h"
@@ -53,6 +53,17 @@
 #define CON_SETUP_TO           9
 
 static int ctl;
+
+static struct {
+	const char	*name;		/* Friendly name */
+	const char	*uuid128;	/* UUID 128 */
+	uint16_t	id;		/* Service class identifier */
+} __svc[] = {
+	{ "panu",	PANU_UUID,	BNEP_SVC_PANU	},
+	{ "gn",		GN_UUID,	BNEP_SVC_GN	},
+	{ "nap",	NAP_UUID,	BNEP_SVC_NAP	},
+	{ NULL }
+};
 
 struct __service_16 {
 	uint16_t dst;
@@ -74,17 +85,63 @@ struct bnep {
 	void	*disconn_data;
 };
 
+uint16_t bnep_service_id(const char *svc)
+{
+	int i;
+	uint16_t id;
+
+	/* Friendly service name */
+	for (i = 0; __svc[i].name; i++) {
+		if (!strcasecmp(svc, __svc[i].name))
+			return __svc[i].id;
+	}
+
+	/* UUID 128 string */
+	for (i = 0; __svc[i].uuid128; i++) {
+		if (!strcasecmp(svc, __svc[i].uuid128))
+			return __svc[i].id;
+	}
+
+	/* Try convert to HEX */
+	id = strtol(svc, NULL, 16);
+	if ((id < BNEP_SVC_PANU) || (id > BNEP_SVC_GN))
+		return 0;
+
+	return id;
+}
+
+const char *bnep_uuid(uint16_t id)
+{
+	int i;
+
+	for (i = 0; __svc[i].uuid128; i++)
+		if (__svc[i].id == id)
+			return __svc[i].uuid128;
+	return NULL;
+}
+
+const char *bnep_name(uint16_t id)
+{
+	int i;
+
+	for (i = 0; __svc[i].name; i++)
+		if (__svc[i].id == id)
+			return __svc[i].name;
+	return NULL;
+}
+
 int bnep_init(void)
 {
 	ctl = socket(PF_BLUETOOTH, SOCK_RAW, BTPROTO_BNEP);
+
 	if (ctl < 0) {
 		int err = -errno;
 
 		if (err == -EPROTONOSUPPORT)
 			warn("kernel lacks bnep-protocol support");
 		else
-			error("bnep: Failed to open control socket: %s (%d)",
-							strerror(-err), -err);
+			error("Failed to open control socket: %s (%d)",
+						strerror(-err), -err);
 
 		return err;
 	}
@@ -105,10 +162,10 @@ static int bnep_conndel(const bdaddr_t *dst)
 	memset(&req, 0, sizeof(req));
 	baswap((bdaddr_t *)&req.dst, dst);
 	req.flags = 0;
-	if (ioctl(ctl, BNEPCONNDEL, &req) < 0) {
+	if (ioctl(ctl, BNEPCONNDEL, &req)) {
 		int err = -errno;
-		error("bnep: Failed to kill connection: %s (%d)",
-							strerror(-err), -err);
+		error("Failed to kill connection: %s (%d)",
+						strerror(-err), -err);
 		return err;
 	}
 	return 0;
@@ -124,11 +181,10 @@ static int bnep_connadd(int sk, uint16_t role, char *dev)
 
 	req.sock = sk;
 	req.role = role;
-	req.flags = (1 << BNEP_SETUP_RESPONSE);
 	if (ioctl(ctl, BNEPCONNADD, &req) < 0) {
 		int err = -errno;
-		error("bnep: Failed to add device %s: %s(%d)",
-						dev, strerror(-err), -err);
+		error("Failed to add device %s: %s(%d)",
+				dev, strerror(-err), -err);
 		return err;
 	}
 
@@ -136,22 +192,10 @@ static int bnep_connadd(int sk, uint16_t role, char *dev)
 	return 0;
 }
 
-static uint32_t bnep_getsuppfeat(void)
-{
-	uint32_t feat;
-
-	if (ioctl(ctl, BNEPGETSUPPFEAT, &feat) < 0)
-		feat = 0;
-
-	DBG("supported features: 0x%x", feat);
-
-	return feat;
-}
-
 static int bnep_if_up(const char *devname)
 {
 	struct ifreq ifr;
-	int sk, err = 0;
+	int sk, err;
 
 	sk = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -161,21 +205,22 @@ static int bnep_if_up(const char *devname)
 	ifr.ifr_flags |= IFF_UP;
 	ifr.ifr_flags |= IFF_MULTICAST;
 
-	if (ioctl(sk, SIOCSIFFLAGS, (void *) &ifr) < 0) {
-		err = -errno;
-		error("bnep: Could not bring up %s: %s(%d)",
-						devname, strerror(-err), -err);
-	}
+	err = ioctl(sk, SIOCSIFFLAGS, (void *) &ifr);
 
 	close(sk);
 
-	return err;
+	if (err < 0) {
+		error("Could not bring up %s", devname);
+		return err;
+	}
+
+	return 0;
 }
 
 static int bnep_if_down(const char *devname)
 {
 	struct ifreq ifr;
-	int sk, err = 0;
+	int sk, err;
 
 	sk = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -185,15 +230,16 @@ static int bnep_if_down(const char *devname)
 	ifr.ifr_flags &= ~IFF_UP;
 
 	/* Bring down the interface */
-	if (ioctl(sk, SIOCSIFFLAGS, (void *) &ifr) < 0) {
-		err = -errno;
-		error("bnep: Could not bring down %s: %s(%d)",
-						devname, strerror(-err), -err);
-	}
+	err = ioctl(sk, SIOCSIFFLAGS, (void *) &ifr);
 
 	close(sk);
 
-	return err;
+	if (err < 0) {
+		error("Could not bring down %s", devname);
+		return err;
+	}
+
+	return 0;
 }
 
 static gboolean bnep_watchdog_cb(GIOChannel *chan, GIOCondition cond,
@@ -226,7 +272,7 @@ static gboolean bnep_setup_cb(GIOChannel *chan, GIOCondition cond,
 	}
 
 	if (cond & (G_IO_HUP | G_IO_ERR)) {
-		error("bnep: Hangup or error on l2cap server socket");
+		error("Hangup or error on l2cap server socket");
 		goto failed;
 	}
 
@@ -234,25 +280,25 @@ static gboolean bnep_setup_cb(GIOChannel *chan, GIOCondition cond,
 	memset(pkt, 0, BNEP_MTU);
 	r = read(sk, pkt, sizeof(pkt) - 1);
 	if (r < 0) {
-		error("bnep: IO Channel read error");
+		error("IO Channel read error");
 		goto failed;
 	}
 
 	if (r == 0) {
-		error("bnep: No packet received on l2cap socket");
+		error("No packet received on l2cap socket");
 		goto failed;
 	}
 
 	errno = EPROTO;
 
 	if ((size_t) r < sizeof(*rsp)) {
-		error("bnep: Packet received is not bnep type");
+		error("Packet received is not bnep type");
 		goto failed;
 	}
 
 	rsp = (void *) pkt;
 	if (rsp->type != BNEP_CONTROL) {
-		error("bnep: Packet received is not bnep type");
+		error("Packet received is not bnep type");
 		goto failed;
 	}
 
@@ -261,7 +307,7 @@ static gboolean bnep_setup_cb(GIOChannel *chan, GIOCondition cond,
 
 	r = ntohs(rsp->resp);
 	if (r != BNEP_SUCCESS) {
-		error("bnep: failed");
+		error("bnep failed");
 		goto failed;
 	}
 
@@ -270,10 +316,13 @@ static gboolean bnep_setup_cb(GIOChannel *chan, GIOCondition cond,
 	setsockopt(sk, SOL_SOCKET, SO_RCVTIMEO, &timeo, sizeof(timeo));
 
 	sk = g_io_channel_unix_get_fd(session->io);
-	if (bnep_connadd(sk, session->src, session->iface) < 0)
+	if (bnep_connadd(sk, session->src, session->iface)) {
+		error("bnep conn could not be added");
 		goto failed;
+	}
 
-	if (bnep_if_up(session->iface) < 0) {
+	if (bnep_if_up(session->iface)) {
+		error("could not up %s", session->iface);
 		bnep_conndel(&session->dst_addr);
 		goto failed;
 	}
@@ -312,7 +361,7 @@ static int bnep_setup_conn_req(struct bnep *session)
 
 	fd = g_io_channel_unix_get_fd(session->io);
 	if (write(fd, pkt, sizeof(*req) + sizeof(*s)) < 0) {
-		error("bnep: connection req send failed: %s", strerror(errno));
+		error("bnep connection req send failed: %s", strerror(errno));
 		return -errno;
 	}
 
@@ -326,9 +375,9 @@ static gboolean bnep_conn_req_to(gpointer user_data)
 	struct bnep *session = user_data;
 
 	if (session->attempts == CON_SETUP_RETRIES) {
-		error("bnep: Too many bnep connection attempts");
+		error("Too many bnep connection attempts");
 	} else {
-		error("bnep: connection setup TO, retrying...");
+		error("bnep connection setup TO, retrying...");
 		if (bnep_setup_conn_req(session) == 0)
 			return TRUE;
 	}
@@ -382,26 +431,22 @@ void bnep_free(struct bnep *session)
 	g_free(session);
 }
 
-int bnep_connect(struct bnep *session, bnep_connect_cb conn_cb,
-					bnep_disconnect_cb disconn_cb,
-					void *conn_data, void *disconn_data)
+int bnep_connect(struct bnep *session, bnep_connect_cb conn_cb, void *data)
 {
 	GError *gerr = NULL;
 	int err;
 
-	if (!session || !conn_cb || !disconn_cb)
+	if (!session || !conn_cb)
 		return -EINVAL;
 
 	session->attempts = 0;
 	session->conn_cb = conn_cb;
-	session->disconn_cb = disconn_cb;
-	session->conn_data = conn_data;
-	session->disconn_data = disconn_data;
+	session->conn_data = data;
 
 	bt_io_get(session->io, &gerr, BT_IO_OPT_DEST_BDADDR, &session->dst_addr,
 							BT_IO_OPT_INVALID);
 	if (gerr) {
-		error("bnep: connect failed: %s", gerr->message);
+		error("%s", gerr->message);
 		g_error_free(gerr);
 		return -EINVAL;
 	}
@@ -434,11 +479,23 @@ void bnep_disconnect(struct bnep *session)
 	bnep_conndel(&session->dst_addr);
 }
 
+void bnep_set_disconnect(struct bnep *session, bnep_disconnect_cb disconn_cb,
+								void *data)
+{
+	if (!session || !disconn_cb)
+		return;
+
+	if (!session->disconn_cb && !session->disconn_data) {
+		session->disconn_cb = disconn_cb;
+		session->disconn_data = data;
+	}
+}
+
 static int bnep_add_to_bridge(const char *devname, const char *bridge)
 {
 	int ifindex;
 	struct ifreq ifr;
-	int sk, err = 0;
+	int sk, err;
 
 	if (!devname || !bridge)
 		return -EINVAL;
@@ -453,24 +510,23 @@ static int bnep_add_to_bridge(const char *devname, const char *bridge)
 	strncpy(ifr.ifr_name, bridge, IFNAMSIZ - 1);
 	ifr.ifr_ifindex = ifindex;
 
-	if (ioctl(sk, SIOCBRADDIF, &ifr) < 0) {
-		err = -errno;
-		error("bnep: Can't add %s to the bridge %s: %s(%d)",
-					devname, bridge, strerror(-err), -err);
-	} else {
-		info("bnep: bridge %s: interface %s added", bridge, devname);
-	}
+	err = ioctl(sk, SIOCBRADDIF, &ifr);
 
 	close(sk);
 
-	return err;
+	if (err < 0)
+		return err;
+
+	info("bridge %s: interface %s added", bridge, devname);
+
+	return 0;
 }
 
 static int bnep_del_from_bridge(const char *devname, const char *bridge)
 {
 	int ifindex;
 	struct ifreq ifr;
-	int sk, err = 0;
+	int sk, err;
 
 	if (!devname || !bridge)
 		return -EINVAL;
@@ -485,68 +541,94 @@ static int bnep_del_from_bridge(const char *devname, const char *bridge)
 	strncpy(ifr.ifr_name, bridge, IFNAMSIZ - 1);
 	ifr.ifr_ifindex = ifindex;
 
-	if (ioctl(sk, SIOCBRDELIF, &ifr) < 0) {
-		err = -errno;
-		error("bnep: Can't delete %s from the bridge %s: %s(%d)",
-					devname, bridge, strerror(-err), -err);
-	} else {
-		info("bnep: bridge %s: interface %s removed", bridge, devname);
-	}
+	err = ioctl(sk, SIOCBRDELIF, &ifr);
 
 	close(sk);
 
-	return err;
+	if (err < 0)
+		return err;
+
+	info("bridge %s: interface %s removed", bridge, devname);
+
+	return 0;
 }
 
-static ssize_t bnep_send_ctrl_rsp(int sk, uint8_t ctrl, uint16_t resp)
+int bnep_server_add(int sk, uint16_t dst, char *bridge, char *iface,
+						const bdaddr_t *addr)
 {
-	ssize_t sent;
+	if (!bridge || !iface || !addr)
+		return -EINVAL;
 
-	switch (ctrl) {
-	case BNEP_CMD_NOT_UNDERSTOOD: {
-		struct bnep_ctrl_cmd_not_understood_cmd rsp;
-
-		rsp.type = BNEP_CONTROL;
-		rsp.ctrl = ctrl;
-		rsp.unkn_ctrl = (uint8_t) resp;
-
-		sent = send(sk, &rsp, sizeof(rsp), 0);
-		break;
-	}
-	case BNEP_FILTER_MULT_ADDR_RSP:
-	case BNEP_FILTER_NET_TYPE_RSP:
-	case BNEP_SETUP_CONN_RSP: {
-		struct bnep_control_rsp rsp;
-
-		rsp.type = BNEP_CONTROL;
-		rsp.ctrl = ctrl;
-		rsp.resp = htons(resp);
-
-		sent = send(sk, &rsp, sizeof(rsp), 0);
-		break;
-	}
-	default:
-		error("bnep: wrong response type");
-		sent = -1;
-		break;
+	if (bnep_connadd(sk, dst, iface) < 0) {
+		error("Can't add connection to the bridge %s: %s(%d)",
+						bridge, strerror(errno), errno);
+		return -errno;
 	}
 
-	return sent;
+	if (bnep_add_to_bridge(iface, bridge) < 0) {
+		error("Can't add %s to the bridge %s: %s(%d)",
+					iface, bridge, strerror(errno), errno);
+		bnep_conndel(addr);
+		return -errno;
+	}
+
+	if (bnep_if_up(iface) < 0) {
+		error("Can't up the interface %s: %s(%d)",
+						iface, strerror(errno), errno);
+		return -errno;
+	}
+
+	return 0;
 }
 
-static uint16_t bnep_setup_decode(int sk, struct bnep_setup_conn_req *req,
-								uint16_t *dst)
+void bnep_server_delete(char *bridge, char *iface, const bdaddr_t *addr)
+{
+	if (!bridge || !iface || !addr)
+		return;
+
+	bnep_del_from_bridge(iface, bridge);
+	bnep_if_down(iface);
+	bnep_conndel(addr);
+}
+
+ssize_t bnep_send_ctrl_rsp(int sk, uint8_t type, uint8_t ctrl, uint16_t resp)
+{
+	struct bnep_control_rsp rsp;
+
+	rsp.type = type;
+	rsp.ctrl = ctrl;
+	rsp.resp = htons(resp);
+
+	return send(sk, &rsp, sizeof(rsp), 0);
+}
+
+uint16_t bnep_setup_chk(uint16_t dst, uint16_t src)
+{
+	/* Allowed PAN Profile scenarios */
+	switch (dst) {
+	case BNEP_SVC_NAP:
+	case BNEP_SVC_GN:
+		if (src == BNEP_SVC_PANU)
+			return 0;
+		return BNEP_CONN_INVALID_SRC;
+	case BNEP_SVC_PANU:
+		if (src == BNEP_SVC_PANU ||  src == BNEP_SVC_GN ||
+							src == BNEP_SVC_NAP)
+			return 0;
+
+		return BNEP_CONN_INVALID_SRC;
+	}
+
+	return BNEP_CONN_INVALID_DST;
+}
+
+uint16_t bnep_setup_decode(struct bnep_setup_conn_req *req, uint16_t *dst,
+								uint16_t *src)
 {
 	const uint8_t bt_base[] = { 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
 					0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB };
-	uint16_t src;
 	uint8_t *dest, *source;
 	uint32_t val;
-
-	if (((req->type != BNEP_CONTROL) &&
-		(req->type != (BNEP_CONTROL | BNEP_EXT_HEADER)))  ||
-					req->ctrl != BNEP_SETUP_CONN_REQ)
-		return BNEP_CONN_NOT_ALLOWED;
 
 	dest = req->service;
 	source = req->service + req->uuid_size;
@@ -554,7 +636,7 @@ static uint16_t bnep_setup_decode(int sk, struct bnep_setup_conn_req *req,
 	switch (req->uuid_size) {
 	case 2: /* UUID16 */
 		*dst = get_be16(dest);
-		src = get_be16(source);
+		*src = get_be16(source);
 		break;
 	case 16: /* UUID128 */
 		/* Check that the bytes in the UUID, except the service ID
@@ -578,159 +660,11 @@ static uint16_t bnep_setup_decode(int sk, struct bnep_setup_conn_req *req,
 		if (val > 0xffff)
 			return BNEP_CONN_INVALID_SRC;
 
-		src = val;
+		*src = val;
 		break;
 	default:
 		return BNEP_CONN_INVALID_SVC;
 	}
 
-	/* Allowed PAN Profile scenarios */
-	switch (*dst) {
-	case BNEP_SVC_NAP:
-	case BNEP_SVC_GN:
-		if (src == BNEP_SVC_PANU)
-			return BNEP_SUCCESS;
-		return BNEP_CONN_INVALID_SRC;
-	case BNEP_SVC_PANU:
-		if (src == BNEP_SVC_PANU || src == BNEP_SVC_GN ||
-							src == BNEP_SVC_NAP)
-			return BNEP_SUCCESS;
-
-		return BNEP_CONN_INVALID_SRC;
-	}
-
-	return BNEP_CONN_INVALID_DST;
-}
-
-static int bnep_server_add_legacy(int sk, uint16_t dst, char *bridge,
-					char *iface, const bdaddr_t *addr,
-					uint8_t *setup_data, int len)
-{
-	int err, n;
-	uint16_t rsp;
-
-	n = read(sk, setup_data, len);
-	if (n != len) {
-		err = -EIO;
-		rsp = BNEP_CONN_NOT_ALLOWED;
-		goto reply;
-	}
-
-	err = bnep_connadd(sk, dst, iface);
-	if (err < 0) {
-		rsp = BNEP_CONN_NOT_ALLOWED;
-		goto reply;
-	}
-
-	err = bnep_add_to_bridge(iface, bridge);
-	if (err < 0) {
-		bnep_conndel(addr);
-		rsp = BNEP_CONN_NOT_ALLOWED;
-		goto reply;
-	}
-
-	err = bnep_if_up(iface);
-	if (err < 0) {
-		bnep_del_from_bridge(iface, bridge);
-		bnep_conndel(addr);
-		rsp = BNEP_CONN_NOT_ALLOWED;
-		goto reply;
-	}
-
-	rsp = BNEP_SUCCESS;
-
-reply:
-	if (bnep_send_ctrl_rsp(sk, BNEP_SETUP_CONN_RSP, rsp) < 0) {
-		err = -errno;
-		error("bnep: send ctrl rsp error: %s (%d)", strerror(-err),
-									-err);
-	}
-
-	return err;
-}
-
-int bnep_server_add(int sk, char *bridge, char *iface, const bdaddr_t *addr,
-						uint8_t *setup_data, int len)
-{
-	int err;
-	uint32_t feat;
-	uint16_t rsp, dst;
-	struct bnep_setup_conn_req *req = (void *) setup_data;
-
-	/* Highest known Control command ID
-	 * is BNEP_FILTER_MULT_ADDR_RSP = 0x06 */
-	if (req->type == BNEP_CONTROL &&
-					req->ctrl > BNEP_FILTER_MULT_ADDR_RSP) {
-		error("bnep: cmd not understood");
-		err = bnep_send_ctrl_rsp(sk, BNEP_CMD_NOT_UNDERSTOOD,
-								req->ctrl);
-		if (err < 0)
-			error("send not understood ctrl rsp error: %s (%d)",
-							strerror(errno), errno);
-
-		return err;
-	}
-
-	/* Processing BNEP_SETUP_CONNECTION_REQUEST_MSG */
-	rsp = bnep_setup_decode(sk, req, &dst);
-	if (rsp != BNEP_SUCCESS) {
-		err = -rsp;
-		error("bnep: error while decoding setup connection request: %d",
-									rsp);
-		goto failed;
-	}
-
-	feat = bnep_getsuppfeat();
-
-	/*
-	 * Take out setup data if kernel doesn't support handling it, especially
-	 * setup request. If kernel would have set session flags, they should
-	 * be checked and handled respectively.
-	 */
-	if (!feat || !(feat & (1 << BNEP_SETUP_RESPONSE)))
-		return bnep_server_add_legacy(sk, dst, bridge, iface, addr,
-							setup_data, len);
-
-	err = bnep_connadd(sk, dst, iface);
-	if (err < 0) {
-		rsp = BNEP_CONN_NOT_ALLOWED;
-		goto failed;
-	}
-
-	err = bnep_add_to_bridge(iface, bridge);
-	if (err < 0)
-		goto failed_conn;
-
-	err = bnep_if_up(iface);
-	if (err < 0)
-		goto failed_bridge;
-
-	return 0;
-
-failed_bridge:
-	bnep_del_from_bridge(iface, bridge);
-
-failed_conn:
-	bnep_conndel(addr);
-
-	return err;
-
-failed:
-	if (bnep_send_ctrl_rsp(sk, BNEP_SETUP_CONN_RSP, rsp) < 0) {
-		err = -errno;
-		error("bnep: send ctrl rsp error: %s (%d)", strerror(-err),
-									-err);
-	}
-
-	return err;
-}
-
-void bnep_server_delete(char *bridge, char *iface, const bdaddr_t *addr)
-{
-	if (!bridge || !iface || !addr)
-		return;
-
-	bnep_del_from_bridge(iface, bridge);
-	bnep_if_down(iface);
-	bnep_conndel(addr);
+	return BNEP_SUCCESS;
 }

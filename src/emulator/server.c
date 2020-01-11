@@ -39,10 +39,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
 
-#include "src/shared/mainloop.h"
+#include "monitor/mainloop.h"
 #include "btdev.h"
 #include "server.h"
 
@@ -84,19 +84,13 @@ static void client_destroy(void *user_data)
 	free(client);
 }
 
-static void client_write_callback(const struct iovec *iov, int iovlen,
+static void client_write_callback(const void *data, uint16_t len,
 							void *user_data)
 {
 	struct client *client = user_data;
-	struct msghdr msg;
 	ssize_t written;
 
-	memset(&msg, 0, sizeof(msg));
-
-	msg.msg_iov = (struct iovec *) iov;
-	msg.msg_iovlen = iovlen;
-
-	written = sendmsg(client->fd, &msg, MSG_DONTWAIT);
+	written = send(client->fd, data, len, MSG_DONTWAIT);
 	if (written < 0)
 		return;
 }
@@ -130,7 +124,6 @@ again:
 
 	while (count > 0) {
 		hci_command_hdr *cmd_hdr;
-		hci_acl_hdr *acl_hdr;
 
 		if (!client->pkt_data) {
 			client->pkt_type = ptr[0];
@@ -144,12 +137,6 @@ again:
 				cmd_hdr = (hci_command_hdr *) (ptr + 1);
 				client->pkt_expect = HCI_COMMAND_HDR_SIZE +
 							cmd_hdr->plen + 1;
-				client->pkt_data = malloc(client->pkt_expect);
-				client->pkt_len = 0;
-				break;
-			case HCI_ACLDATA_PKT:
-				acl_hdr = (hci_acl_hdr*)(ptr + 1);
-				client->pkt_expect = HCI_ACL_HDR_SIZE + acl_hdr->dlen + 1;
 				client->pkt_data = malloc(client->pkt_expect);
 				client->pkt_len = 0;
 				break;

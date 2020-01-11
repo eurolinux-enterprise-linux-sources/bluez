@@ -27,8 +27,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "gobex/gobex.h"
-#include "gobex/gobex-header.h"
+#include <gobex/gobex-header.h>
 
 #include "util.h"
 
@@ -554,7 +553,7 @@ int main(int argc, char *argv[])
 					test_header_encode_name_umlaut);
 	g_test_add_func("/gobex/test_header_encode_body",
 						test_header_encode_body);
-	g_test_add_func("/gobex/test_header_encode_actionid",
+	g_test_add_func("/gobex/test_header_encode_connid",
 						test_header_encode_actionid);
 	g_test_add_func("/gobex/test_header_encode_apparam",
 						test_header_encode_apparam);

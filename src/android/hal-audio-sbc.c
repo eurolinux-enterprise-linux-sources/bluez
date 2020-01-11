@@ -18,7 +18,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <malloc.h>
-#include <stdlib.h>
 
 #include <sbc/sbc.h>
 #include "audio-msg.h"

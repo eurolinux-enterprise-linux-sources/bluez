@@ -22,9 +22,13 @@
  *
  */
 
-#include <stdbool.h>
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+#include <bluetooth/hci.h>
+#include <bluetooth/hci_lib.h>
 #include <dbus/dbus.h>
 #include <glib.h>
+#include <stdbool.h>
 
 #define MAX_NAME_LENGTH		248
 
@@ -75,8 +79,6 @@ bool btd_adapter_get_pairable(struct btd_adapter *adapter);
 bool btd_adapter_get_powered(struct btd_adapter *adapter);
 bool btd_adapter_get_connectable(struct btd_adapter *adapter);
 
-struct btd_gatt_database *btd_adapter_get_database(struct btd_adapter *adapter);
-
 uint32_t btd_adapter_get_class(struct btd_adapter *adapter);
 const char *btd_adapter_get_name(struct btd_adapter *adapter);
 void btd_adapter_remove_device(struct btd_adapter *adapter,
@@ -92,7 +94,6 @@ struct btd_device *btd_adapter_find_device(struct btd_adapter *adapter,
 
 const char *adapter_get_path(struct btd_adapter *adapter);
 const bdaddr_t *btd_adapter_get_address(struct btd_adapter *adapter);
-uint8_t btd_adapter_get_address_type(struct btd_adapter *adapter);
 int adapter_set_name(struct btd_adapter *adapter, const char *name);
 
 int adapter_service_add(struct btd_adapter *adapter, sdp_record_t *rec);
@@ -136,16 +137,6 @@ struct btd_adapter_pin_cb_iter *btd_adapter_pin_cb_iter_new(
 						struct btd_adapter *adapter);
 void btd_adapter_pin_cb_iter_free(struct btd_adapter_pin_cb_iter *iter);
 bool btd_adapter_pin_cb_iter_end(struct btd_adapter_pin_cb_iter *iter);
-
-typedef void (*btd_msd_cb_t) (struct btd_adapter *adapter,
-							struct btd_device *dev,
-							uint16_t company,
-							const uint8_t *data,
-							uint8_t data_len);
-void btd_adapter_register_msd_cb(struct btd_adapter *adapter,
-							btd_msd_cb_t cb);
-void btd_adapter_unregister_msd_cb(struct btd_adapter *adapter,
-							btd_msd_cb_t cb);
 
 /* If TRUE, enables fast connectabe, i.e. reduces page scan interval and changes
  * type. If FALSE, disables fast connectable, i.e. sets page scan interval and
@@ -224,6 +215,3 @@ gboolean btd_adapter_check_oob_handler(struct btd_adapter *adapter);
 void btd_adapter_for_each_device(struct btd_adapter *adapter,
 			void (*cb)(struct btd_device *device, void *data),
 			void *data);
-
-bool btd_le_connect_before_pairing(void);
-

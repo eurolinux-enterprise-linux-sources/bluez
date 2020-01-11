@@ -30,9 +30,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include <glib.h>
+#include <bluetooth/bluetooth.h>
 
-#include "lib/bluetooth.h"
+#include <glib.h>
 
 #include "btio/btio.h"
 #include "src/plugin.h"

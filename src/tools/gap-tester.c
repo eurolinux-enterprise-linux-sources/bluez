@@ -25,10 +25,10 @@
 #include <config.h>
 #endif
 
-#include "gdbus/gdbus.h"
+#include <gdbus.h>
 
 #include "src/shared/tester.h"
-#include "emulator/hciemu.h"
+#include "src/shared/hciemu.h"
 
 static DBusConnection *dbus_conn = NULL;
 static GDBusClient *dbus_client = NULL;

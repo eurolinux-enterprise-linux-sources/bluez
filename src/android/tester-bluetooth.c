@@ -17,8 +17,6 @@
 #include <stdbool.h>
 
 #include "emulator/bthost.h"
-#include "src/shared/tester.h"
-#include "src/shared/queue.h"
 #include "tester-main.h"
 
 static struct queue *list; /* List of bluetooth test cases */
@@ -32,14 +30,14 @@ static bt_property_t prop_emu_bdaddr = {
 	.len = sizeof(emu_bdaddr_val),
 };
 
-static char emu_bdname_val[] = "BlueZ for Android";
+static const char emu_bdname_val[] = "BlueZ for Android";
 static bt_property_t prop_emu_bdname = {
 	.type = BT_PROPERTY_BDNAME,
 	.val = &emu_bdname_val,
 	.len = sizeof(emu_bdname_val) - 1,
 };
 
-static char emu_uuids_val[] = {
+static const char emu_uuids_val[] = {
 	/* Multi profile UUID */
 	0x00, 0x00, 0x11, 0x3b, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
 					0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB,
@@ -126,7 +124,7 @@ static struct bt_action_data prop_emu_remote_ble_rssi_req = {
 	.prop_type = BT_PROPERTY_REMOTE_RSSI,
 };
 
-static char emu_remote_bdname_val[] = "00:AA:01:01:00:00";
+static const char emu_remote_bdname_val[] = "00:AA:01:01:00:00";
 static bt_property_t prop_emu_remote_ble_bdname_prop = {
 	.type = BT_PROPERTY_BDNAME,
 	.val = &emu_remote_bdname_val,
@@ -188,7 +186,7 @@ static struct bt_action_data prop_emu_remote_ble_verinfo_req = {
 	.prop_type = BT_PROPERTY_REMOTE_VERSION_INFO,
 };
 
-static char prop_test_fname_val[] = "FriendlyTestName";
+static const char prop_test_fname_val[] = "FriendlyTestName";
 static bt_property_t prop_emu_remote_ble_fname_prop = {
 	.type = BT_PROPERTY_REMOTE_FRIENDLY_NAME,
 	.val = &prop_test_fname_val,
@@ -448,10 +446,6 @@ static struct bt_action_data ssp_confirm_reject_reply = {
 
 static  struct bt_action_data no_input_no_output_io_cap = {
 	.io_cap = 0x03,
-};
-
-static  struct bt_action_data display_yes_no_io_cap = {
-	.io_cap = 0x01,
 };
 
 static uint16_t test_conn_handle = 0;
@@ -1040,7 +1034,6 @@ static struct test_case test_cases[] = {
 		CALLBACK_STATE(CB_BT_ADAPTER_STATE_CHANGED, BT_STATE_ON),
 		ACTION_SUCCESS(emu_setup_powered_remote_action, NULL),
 		ACTION_SUCCESS(emu_set_ssp_mode_action, NULL),
-		ACTION_SUCCESS(emu_set_io_cap, &display_yes_no_io_cap),
 		ACTION_SUCCESS(bt_start_discovery_action, NULL),
 		CALLBACK_STATE(CB_BT_DISCOVERY_STATE_CHANGED,
 							BT_DISCOVERY_STARTED),
@@ -1064,7 +1057,6 @@ static struct test_case test_cases[] = {
 		CALLBACK_STATE(CB_BT_ADAPTER_STATE_CHANGED, BT_STATE_ON),
 		ACTION_SUCCESS(emu_setup_powered_remote_action, NULL),
 		ACTION_SUCCESS(emu_set_ssp_mode_action, NULL),
-		ACTION_SUCCESS(emu_set_io_cap, &display_yes_no_io_cap),
 		ACTION_SUCCESS(bt_start_discovery_action, NULL),
 		CALLBACK_STATE(CB_BT_DISCOVERY_STATE_CHANGED,
 							BT_DISCOVERY_STARTED),
@@ -1089,7 +1081,6 @@ static struct test_case test_cases[] = {
 		CALLBACK_STATE(CB_BT_ADAPTER_STATE_CHANGED, BT_STATE_ON),
 		ACTION_SUCCESS(emu_setup_powered_remote_action, NULL),
 		ACTION_SUCCESS(emu_set_ssp_mode_action, NULL),
-		ACTION_SUCCESS(emu_set_io_cap, &display_yes_no_io_cap),
 		ACTION_SUCCESS(bt_create_bond_action,
 					&prop_test_remote_ble_bdaddr_req),
 		CALLBACK_BOND_STATE(BT_BOND_STATE_BONDING,
@@ -1122,7 +1113,6 @@ static struct test_case test_cases[] = {
 		CALLBACK_STATE(CB_BT_ADAPTER_STATE_CHANGED, BT_STATE_ON),
 		ACTION_SUCCESS(emu_setup_powered_remote_action, NULL),
 		ACTION_SUCCESS(emu_set_ssp_mode_action, NULL),
-		ACTION_SUCCESS(emu_set_io_cap, &display_yes_no_io_cap),
 		ACTION_SUCCESS(bt_start_discovery_action, NULL),
 		CALLBACK_STATE(CB_BT_DISCOVERY_STATE_CHANGED,
 							BT_DISCOVERY_STARTED),
@@ -1148,7 +1138,6 @@ static struct test_case test_cases[] = {
 		CALLBACK_STATE(CB_BT_ADAPTER_STATE_CHANGED, BT_STATE_ON),
 		ACTION_SUCCESS(emu_setup_powered_remote_action, NULL),
 		ACTION_SUCCESS(emu_set_ssp_mode_action, NULL),
-		ACTION_SUCCESS(emu_set_io_cap, &display_yes_no_io_cap),
 		ACTION_SUCCESS(bt_start_discovery_action, NULL),
 		CALLBACK_STATE(CB_BT_DISCOVERY_STATE_CHANGED,
 							BT_DISCOVERY_STARTED),
@@ -1226,7 +1215,8 @@ struct queue *get_bluetooth_tests(void)
 	list = queue_new();
 
 	for (; i < sizeof(test_cases) / sizeof(test_cases[0]); ++i)
-		queue_push_tail(list, &test_cases[i]);
+		if (!queue_push_tail(list, &test_cases[i]))
+			return NULL;
 
 	return list;
 }

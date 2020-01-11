@@ -32,7 +32,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <glib.h>
-#include <string.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>

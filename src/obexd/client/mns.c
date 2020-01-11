@@ -33,16 +33,16 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#include "gobex/gobex.h"
-#include "gobex/gobex-apparam.h"
+#include <gobex/gobex.h>
+#include <gobex/gobex-apparam.h>
 
-#include "obexd/src/obexd.h"
-#include "obexd/src/plugin.h"
-#include "obexd/src/log.h"
-#include "obexd/src/obex.h"
-#include "obexd/src/service.h"
-#include "obexd/src/mimetype.h"
-#include "obexd/src/map_ap.h"
+#include "obexd.h"
+#include "plugin.h"
+#include "log.h"
+#include "obex.h"
+#include "service.h"
+#include "mimetype.h"
+#include "map_ap.h"
 #include "map-event.h"
 
 #include "obexd/src/manager.h"
@@ -191,7 +191,8 @@ static void parse_event_report_handle(struct map_event *event,
 static void parse_event_report_folder(struct map_event *event,
 							const char *value)
 {
-	g_free(event->folder);
+	if (!value)
+		return;
 
 	if (g_str_has_prefix(value, "/"))
 		event->folder = g_strdup(value);
@@ -202,7 +203,8 @@ static void parse_event_report_folder(struct map_event *event,
 static void parse_event_report_old_folder(struct map_event *event,
 							const char *value)
 {
-	g_free(event->old_folder);
+	if (!value)
+		return;
 
 	if (g_str_has_prefix(value, "/"))
 		event->old_folder = g_strdup(value);
@@ -213,36 +215,7 @@ static void parse_event_report_old_folder(struct map_event *event,
 static void parse_event_report_msg_type(struct map_event *event,
 							const char *value)
 {
-	g_free(event->msg_type);
 	event->msg_type = g_strdup(value);
-}
-
-static void parse_event_report_date_time(struct map_event *event,
-							const char *value)
-{
-	g_free(event->datetime);
-	event->datetime = g_strdup(value);
-}
-
-static void parse_event_report_subject(struct map_event *event,
-							const char *value)
-{
-	g_free(event->subject);
-	event->subject = g_strdup(value);
-}
-
-static void parse_event_report_sender_name(struct map_event *event,
-							const char *value)
-{
-	g_free(event->sender_name);
-	event->sender_name = g_strdup(value);
-}
-
-static void parse_event_report_priority(struct map_event *event,
-							const char *value)
-{
-	g_free(event->priority);
-	event->priority = g_strdup(value);
 }
 
 static struct map_event_report_parser {
@@ -254,10 +227,6 @@ static struct map_event_report_parser {
 		{ "folder", parse_event_report_folder },
 		{ "old_folder", parse_event_report_old_folder },
 		{ "msg_type", parse_event_report_msg_type },
-		{ "datetime", parse_event_report_date_time },
-		{ "subject", parse_event_report_subject },
-		{ "sender_name", parse_event_report_sender_name },
-		{ "priority", parse_event_report_priority },
 		{ }
 };
 
@@ -279,8 +248,7 @@ static void event_report_element(GMarkupParseContext *ctxt,
 		for (parser = event_report_parsers; parser && parser->name;
 								parser++) {
 			if (strcasecmp(key, parser->name) == 0) {
-				if (values[i])
-					parser->func(event, values[i]);
+				parser->func(event, values[i]);
 				break;
 			}
 		}
@@ -300,10 +268,6 @@ static void map_event_free(struct map_event *event)
 	g_free(event->folder);
 	g_free(event->old_folder);
 	g_free(event->msg_type);
-	g_free(event->datetime);
-	g_free(event->subject);
-	g_free(event->sender_name);
-	g_free(event->priority);
 	g_free(event);
 }
 

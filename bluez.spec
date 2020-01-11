@@ -1,6 +1,6 @@
 Summary: Bluetooth utilities
 Name: bluez
-Version: 5.44
+Version: 5.23
 Release: 4%{?dist}
 License: GPLv2+
 Group: Applications/System
@@ -16,7 +16,6 @@ Patch3: 0001-Allow-using-obexd-without-systemd-in-the-user-sessio.patch
 Patch4: 0001-obex-Use-GLib-helper-function-to-manipulate-paths.patch
 Patch5: 0002-autopair-Don-t-handle-the-iCade.patch
 Patch7: 0004-agent-Assert-possible-infinite-loop.patch
-Patch8: 0001-Out-of-bounds-heap-read-in-service_search_attr_req-f.patch
 
 %global _hardened_build 1
 
@@ -38,8 +37,6 @@ Requires: dbus >= 0.60
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
-
-Provides: bluez-obexd
 
 # Dropped in Fedora 20:
 Obsoletes: bluez-alsa < 5.0
@@ -66,7 +63,6 @@ Utilities for use in Bluetooth applications:
 	- hcidump
 	- l2test
 	- rctest
-	- gatttool
 	- start scripts (Red Hat)
 	- pcmcia configuration files
 
@@ -138,18 +134,13 @@ git am -p1 %{patches} < /dev/null
 libtoolize -f -c
 autoreconf -f -i
 %configure --enable-cups --enable-tools --enable-library \
-           --enable-sixaxis --enable-pie --enable-deprecated \
+           --enable-sixaxis --enable-pie \
            --with-systemdsystemunitdir=%{_unitdir} \
            --with-systemduserunitdir=%{_userunitdir}
 make %{?_smp_mflags} V=1
 
 %install
 make install DESTDIR=$RPM_BUILD_ROOT
-
-# "make install" fails to install gatttool, necessary for Bluetooth Low Energy
-# Red Hat Bugzilla bug #1141909
-# Debian bug #720486
-install -m0755 attrib/gatttool $RPM_BUILD_ROOT%{_bindir}
 
 # Remove autocrap and libtool droppings
 find $RPM_BUILD_ROOT -name '*.la' -delete
@@ -167,21 +158,15 @@ install -d -m0755 $RPM_BUILD_ROOT/%{_localstatedir}/lib/bluetooth
 
 mkdir -p $RPM_BUILD_ROOT/%{_libdir}/bluetooth/
 
-#copy bluetooth config file
-install -D -p -m0644 src/main.conf ${RPM_BUILD_ROOT}/etc/bluetooth/main.conf
-sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM_BUILD_ROOT}/%{_sysconfdir}/bluetooth/main.conf
-
 %post libs -p /sbin/ldconfig
 
 %postun libs -p /sbin/ldconfig
 
 %post
 %systemd_post bluetooth.service
-%systemd_user_post obex.service
 
 %preun
 %systemd_preun bluetooth.service
-%systemd_user_preun obex.service
 
 %postun
 %systemd_postun_with_restart bluetooth.service
@@ -191,7 +176,6 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 
 %files
 %doc AUTHORS COPYING ChangeLog README
-%{_bindir}/btattach
 %{_bindir}/ciptool
 %{_bindir}/hcitool
 %{_bindir}/l2ping
@@ -205,11 +189,8 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 %{_bindir}/hciconfig
 %{_bindir}/hcidump
 %{_bindir}/l2test
-%{_bindir}/hex2hcd
 %{_bindir}/mpris-proxy
-%{_bindir}/gatttool
 %{_bindir}/rctest
-%{_mandir}/man1/btattach.1.gz
 %{_mandir}/man1/ciptool.1.gz
 %{_mandir}/man1/hcitool.1.gz
 %{_mandir}/man1/rfcomm.1.gz
@@ -231,7 +212,6 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 %{_datadir}/dbus-1/services/org.bluez.obex.service
 %{_unitdir}/bluetooth.service
 %{_userunitdir}/obex.service
-%config %{_sysconfdir}/bluetooth/main.conf
 
 %files libs
 %doc COPYING
@@ -252,35 +232,6 @@ sed -i 's/#\[Policy\]$/\[Policy\]/; s/#AutoEnable=false/AutoEnable=false/' ${RPM
 /lib/udev/rules.d/97-hid2hci.rules
 
 %changelog
-* Mon Sep 11 2017 Don Zickus <dzickus@redhat.com> 5.44-4
-- forgot to bump rev
-Resolves: #1490010
-
-* Mon Sep 11 2017 Don Zickus <dzickus@redhat.com> 5.44-3
-- sdpd heap fix
-Resolves: #1490010
-
-* Mon Mar 27 2017 David Arcari <darcari@redhat.com> 5.44-2
-- added missing updates for sources and .gitignore
-Resolves: #1434581, #1401501
-
-* Tue Mar 21 2017 David Arcari <darcari@redhat.com> 5.44-1
-- Update to 5.44
-- Ship btattach tool
-- Configure systemctl settings for bluez-obex correctly
-- Add Provides: bluez-obexd
-Resolves: #1434581, #1401501
-
-* Fri Aug 5 2016 Don Zickus <dzickus@redhat.com> 5.41-1
-- Update to 5.41
-- obexd fixes to prevent crashes
-- add /etc/bluetooth/main.conf config file
-Resolves: #1313363, #1336476, #1338895
-
-* Wed May 18 2016 Don Zickus <dzickus@redhat.com> 5.39-1
-- Update to 5.39
-Resolves: #1263638 #1296616
-
 * Fri Jul 10 2015 Bastien Nocera <bnocera@redhat.com> 5.23-4
 - Build with --enable-fpie as well
 Resolves: #1174545

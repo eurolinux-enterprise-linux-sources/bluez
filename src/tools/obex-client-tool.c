@@ -36,7 +36,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#include "gobex/gobex.h"
+#include <gobex/gobex.h>
 #include "btio/btio.h"
 
 static GMainLoop *main_loop = NULL;
@@ -432,7 +432,6 @@ int main(int argc, char *argv[])
 	if (err != NULL) {
 		g_printerr("%s\n", err->message);
 		g_error_free(err);
-		g_option_context_free(context);
 		exit(EXIT_FAILURE);
 	}
 
@@ -446,10 +445,8 @@ int main(int argc, char *argv[])
 	else
 		io = unix_connect(transport);
 
-	if (io == NULL) {
-		g_option_context_free(context);
+	if (io == NULL)
 		exit(EXIT_FAILURE);
-	}
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = sig_term;

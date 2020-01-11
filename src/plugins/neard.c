@@ -27,12 +27,11 @@
 
 #include <stdlib.h>
 #include <errno.h>
+#include <gdbus/gdbus.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
-#include "lib/sdp.h"
-
-#include "gdbus/gdbus.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
+#include <bluetooth/sdp.h>
 
 #include "src/plugin.h"
 #include "src/log.h"

@@ -38,7 +38,6 @@
 #include "lib/sdp.h"
 #include "lib/sdp_lib.h"
 #include "profiles/audio/a2dp-codecs.h"
-#include "src/shared/queue.h"
 #include "src/log.h"
 #include "hal-msg.h"
 #include "ipc-common.h"
@@ -65,8 +64,6 @@ static bool audio_retrying = false;
 
 static struct ipc *hal_ipc = NULL;
 static struct ipc *audio_ipc = NULL;
-
-static struct queue *lseps = NULL;
 
 struct a2dp_preset {
 	void *data;
@@ -118,7 +115,7 @@ static void unregister_endpoint(void *data)
 	struct a2dp_endpoint *endpoint = data;
 
 	if (endpoint->sep)
-		avdtp_unregister_sep(lseps, endpoint->sep);
+		avdtp_unregister_sep(endpoint->sep);
 
 	if (endpoint->caps)
 		preset_free(endpoint->caps);
@@ -623,7 +620,6 @@ static void signaling_connect_cb(GIOChannel *chan, GError *err,
 							gpointer user_data)
 {
 	struct a2dp_device *dev = user_data;
-	struct avdtp *session;
 	uint16_t imtu, omtu;
 	GError *gerr = NULL;
 	int fd;
@@ -647,11 +643,9 @@ static void signaling_connect_cb(GIOChannel *chan, GError *err,
 	fd = g_io_channel_unix_get_fd(chan);
 
 	/* FIXME: Add proper version */
-	session = avdtp_new(fd, imtu, omtu, 0x0100, lseps);
-	if (!session)
+	dev->session = avdtp_new(fd, imtu, omtu, 0x0100);
+	if (!dev->session)
 		goto failed;
-
-	dev->session = session;
 
 	avdtp_add_disconnect_cb(dev->session, disconnect_cb, dev);
 
@@ -1333,7 +1327,7 @@ static uint8_t register_endpoint(const uint8_t *uuid, uint8_t codec,
 	endpoint = g_new0(struct a2dp_endpoint, 1);
 	endpoint->id = g_slist_length(endpoints) + 1;
 	endpoint->codec = codec;
-	endpoint->sep = avdtp_register_sep(lseps, AVDTP_SEP_TYPE_SOURCE,
+	endpoint->sep = avdtp_register_sep(AVDTP_SEP_TYPE_SOURCE,
 						AVDTP_MEDIA_TYPE_AUDIO,
 						codec, FALSE, &sep_ind,
 						&sep_cfm, endpoint);
@@ -1630,8 +1624,6 @@ static void bt_audio_unregister(void)
 
 	ipc_cleanup(audio_ipc);
 	audio_ipc = NULL;
-
-	queue_destroy(lseps, NULL);
 }
 
 static bool bt_audio_register(ipc_disconnect_cb disconnect)
@@ -1698,8 +1690,6 @@ bool bt_a2dp_register(struct ipc *ipc, const bdaddr_t *addr, uint8_t mode)
 	DBG("");
 
 	bacpy(&adapter_addr, addr);
-
-	lseps = queue_new();
 
 	server = bt_io_listen(connect_cb, NULL, NULL, NULL, &err,
 				BT_IO_OPT_SOURCE_BDADDR, &adapter_addr,

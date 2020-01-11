@@ -33,11 +33,11 @@
 #include <dbus/dbus.h>
 #include <glib.h>
 
-#include "lib/bluetooth.h"
-#include "lib/sdp.h"
-#include "lib/sdp_lib.h"
-#include "lib/uuid.h"
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+#include <bluetooth/sdp_lib.h>
 
+#include "lib/uuid.h"
 #include "src/plugin.h"
 #include "src/adapter.h"
 #include "src/device.h"
@@ -45,9 +45,6 @@
 #include "src/service.h"
 #include "src/log.h"
 #include "src/sdpd.h"
-#include "src/shared/queue.h"
-
-#include "btio/btio.h"
 
 #include "avdtp.h"
 #include "sink.h"
@@ -60,8 +57,6 @@
  * STREAMING state. */
 #define SUSPEND_TIMEOUT 5
 #define RECONFIGURE_TIMEOUT 500
-
-#define AVDTP_PSM 25
 
 struct a2dp_sep {
 	struct a2dp_server *server;
@@ -82,7 +77,6 @@ struct a2dp_sep {
 
 struct a2dp_setup_cb {
 	struct a2dp_setup *setup;
-	a2dp_discover_cb_t discover_cb;
 	a2dp_select_cb_t select_cb;
 	a2dp_config_cb_t config_cb;
 	a2dp_stream_cb_t resume_cb;
@@ -99,7 +93,6 @@ struct a2dp_setup {
 	struct avdtp_stream *stream;
 	struct avdtp_error *err;
 	avdtp_set_configuration_cb setconf_cb;
-	GSList *seps;
 	GSList *caps;
 	gboolean reconfigure;
 	gboolean start;
@@ -115,19 +108,6 @@ struct a2dp_server {
 	uint32_t sink_record_id;
 	gboolean sink_enabled;
 	gboolean source_enabled;
-	GIOChannel *io;
-	struct queue *seps;
-	struct queue *channels;
-};
-
-struct a2dp_channel {
-	struct a2dp_server *server;
-	struct btd_device *device;
-	GIOChannel *io;
-	guint io_id;
-	unsigned int state_id;
-	unsigned int auth_id;
-	struct avdtp *session;
 };
 
 static GSList *servers = NULL;
@@ -225,29 +205,6 @@ static void finalize_setup_errno(struct a2dp_setup *s, int err,
 	va_end(args);
 }
 
-static int error_to_errno(struct avdtp_error *err)
-{
-	int perr;
-
-	if (!err)
-		return 0;
-
-	if (avdtp_error_category(err) != AVDTP_ERRNO)
-		return -EIO;
-
-	perr = avdtp_error_posix_errno(err);
-	switch (perr) {
-	case EHOSTDOWN:
-	case ECONNABORTED:
-		return -perr;
-	default:
-		/*
-		 * An unexpect error has occurred setup may be attempted again.
-		 */
-		return -EAGAIN;
-	}
-}
-
 static gboolean finalize_config(gpointer data)
 {
 	struct a2dp_setup *s = data;
@@ -262,8 +219,8 @@ static gboolean finalize_config(gpointer data)
 		if (!cb->config_cb)
 			continue;
 
-		cb->config_cb(s->session, s->sep, stream,
-				error_to_errno(s->err), cb->user_data);
+		cb->config_cb(s->session, s->sep, stream, s->err,
+							cb->user_data);
 		setup_cb_free(cb);
 	}
 
@@ -283,8 +240,7 @@ static gboolean finalize_resume(gpointer data)
 		if (!cb->resume_cb)
 			continue;
 
-		cb->resume_cb(s->session, error_to_errno(s->err),
-							cb->user_data);
+		cb->resume_cb(s->session, s->err, cb->user_data);
 		setup_cb_free(cb);
 	}
 
@@ -304,8 +260,7 @@ static gboolean finalize_suspend(gpointer data)
 		if (!cb->suspend_cb)
 			continue;
 
-		cb->suspend_cb(s->session, error_to_errno(s->err),
-							cb->user_data);
+		cb->suspend_cb(s->session, s->err, cb->user_data);
 		setup_cb_free(cb);
 	}
 
@@ -325,24 +280,6 @@ static void finalize_select(struct a2dp_setup *s)
 			continue;
 
 		cb->select_cb(s->session, s->sep, s->caps, cb->user_data);
-		setup_cb_free(cb);
-	}
-}
-
-static void finalize_discover(struct a2dp_setup *s)
-{
-	GSList *l;
-
-	for (l = s->cb; l != NULL; ) {
-		struct a2dp_setup_cb *cb = l->data;
-
-		l = l->next;
-
-		if (!cb->discover_cb)
-			continue;
-
-		cb->discover_cb(s->session, s->seps, error_to_errno(s->err),
-								cb->user_data);
 		setup_cb_free(cb);
 	}
 }
@@ -442,7 +379,7 @@ static void stream_state_changed(struct avdtp_stream *stream,
 static gboolean auto_config(gpointer data)
 {
 	struct a2dp_setup *setup = data;
-	struct btd_device *dev = NULL;
+	struct btd_device *dev = avdtp_get_device(setup->session);
 	struct btd_service *service;
 
 	/* Check if configuration was aborted */
@@ -451,8 +388,6 @@ static gboolean auto_config(gpointer data)
 
 	if (setup->err != NULL)
 		goto done;
-
-	dev = avdtp_get_device(setup->session);
 
 	avdtp_stream_add_cb(setup->session, setup->stream,
 				stream_state_changed, setup->sep);
@@ -490,42 +425,6 @@ static void endpoint_setconf_cb(struct a2dp_setup *setup, gboolean ret)
 	}
 
 	auto_config(setup);
-	setup_unref(setup);
-}
-
-static gboolean endpoint_match_codec_ind(struct avdtp *session,
-				struct avdtp_media_codec_capability *codec,
-				void *user_data)
-{
-	struct a2dp_sep *sep = user_data;
-	a2dp_vendor_codec_t *remote_codec;
-	a2dp_vendor_codec_t *local_codec;
-	uint8_t *capabilities;
-	size_t length;
-
-	if (codec->media_codec_type != A2DP_CODEC_VENDOR)
-		return TRUE;
-
-	if (sep->endpoint == NULL)
-		return FALSE;
-
-	length = sep->endpoint->get_capabilities(sep, &capabilities,
-							sep->user_data);
-	if (length < sizeof(a2dp_vendor_codec_t))
-		return FALSE;
-
-	local_codec = (a2dp_vendor_codec_t *) capabilities;
-	remote_codec = (a2dp_vendor_codec_t *) codec->data;
-
-	if (remote_codec->vendor_id != local_codec->vendor_id)
-		return FALSE;
-
-	if (remote_codec->codec_id != local_codec->codec_id)
-		return FALSE;
-
-	DBG("vendor 0x%08x codec 0x%04x", btohl(remote_codec->vendor_id),
-						btohs(remote_codec->codec_id));
-	return TRUE;
 }
 
 static gboolean endpoint_setconf_ind(struct avdtp *session,
@@ -580,13 +479,12 @@ static gboolean endpoint_setconf_ind(struct avdtp *session,
 		ret = a2dp_sep->endpoint->set_configuration(a2dp_sep,
 						codec->data,
 						cap->length - sizeof(*codec),
-						setup_ref(setup),
+						setup,
 						endpoint_setconf_cb,
 						a2dp_sep->user_data);
 		if (ret == 0)
 			return TRUE;
 
-		setup_unref(setup);
 		setup->err = g_new(struct avdtp_error, 1);
 		avdtp_error_init(setup->err, AVDTP_MEDIA_CODEC,
 					AVDTP_UNSUPPORTED_CONFIGURATION);
@@ -652,18 +550,16 @@ static void endpoint_open_cb(struct a2dp_setup *setup, gboolean ret)
 	if (ret == FALSE) {
 		setup->stream = NULL;
 		finalize_setup_errno(setup, -EPERM, finalize_config, NULL);
-		goto done;
+		return;
 	}
 
 	err = avdtp_open(setup->session, setup->stream);
 	if (err == 0)
-		goto done;
+		return;
 
 	error("Error on avdtp_open %s (%d)", strerror(-err), -err);
 	setup->stream = NULL;
 	finalize_setup_errno(setup, err, finalize_config, NULL);
-done:
-	setup_unref(setup);
 }
 
 static void setconf_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
@@ -723,7 +619,7 @@ static void setconf_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
 		err = a2dp_sep->endpoint->set_configuration(a2dp_sep,
 						codec->data, service->length -
 						sizeof(*codec),
-						setup_ref(setup),
+						setup,
 						endpoint_open_cb,
 						a2dp_sep->user_data);
 		if (err == 0)
@@ -731,7 +627,6 @@ static void setconf_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
 
 		setup->stream = NULL;
 		finalize_setup_errno(setup, -EPERM, finalize_config, NULL);
-		setup_unref(setup);
 		return;
 	}
 
@@ -779,11 +674,9 @@ static gboolean open_ind(struct avdtp *session, struct avdtp_local_sep *sep,
 	else
 		DBG("Source %p: Open_Ind", sep);
 
-	setup = a2dp_setup_get(session);
+	setup = find_setup_by_session(session);
 	if (!setup)
-		return FALSE;
-
-	setup->stream = stream;
+		return TRUE;
 
 	if (setup->reconfigure)
 		setup->reconfigure = FALSE;
@@ -1199,7 +1092,6 @@ static struct avdtp_sep_cfm cfm = {
 };
 
 static struct avdtp_sep_ind endpoint_ind = {
-	.match_codec		= endpoint_match_codec_ind,
 	.get_capability		= endpoint_getcap_ind,
 	.set_configuration	= endpoint_setconf_ind,
 	.get_configuration	= getconf_ind,
@@ -1292,309 +1184,12 @@ static struct a2dp_server *find_server(GSList *list, struct btd_adapter *a)
 	return NULL;
 }
 
-static void channel_free(void *data)
-{
-	struct a2dp_channel *chan = data;
-
-	if (chan->auth_id > 0)
-		btd_cancel_authorization(chan->auth_id);
-
-	if (chan->io_id > 0)
-		g_source_remove(chan->io_id);
-
-	if (chan->io) {
-		g_io_channel_shutdown(chan->io, TRUE, NULL);
-		g_io_channel_unref(chan->io);
-	}
-
-	avdtp_remove_state_cb(chan->state_id);
-
-	g_free(chan);
-}
-
-static void channel_remove(struct a2dp_channel *chan)
-{
-	struct a2dp_server *server = chan->server;
-
-	DBG("chan %p", chan);
-
-	queue_remove(server->channels, chan);
-
-	channel_free(chan);
-}
-
-static gboolean disconnect_cb(GIOChannel *io, GIOCondition cond, gpointer data)
-{
-	struct a2dp_channel *chan = data;
-
-	DBG("chan %p", chan);
-
-	chan->io_id = 0;
-
-	channel_remove(chan);
-
-	return FALSE;
-}
-
-static void avdtp_state_cb(struct btd_device *dev, struct avdtp *session,
-					avdtp_session_state_t old_state,
-					avdtp_session_state_t new_state,
-					void *user_data)
-{
-	struct a2dp_channel *chan = user_data;
-
-	switch (new_state) {
-	case AVDTP_SESSION_STATE_DISCONNECTED:
-		if (chan->session == session)
-			channel_remove(chan);
-		break;
-	case AVDTP_SESSION_STATE_CONNECTING:
-		break;
-	case AVDTP_SESSION_STATE_CONNECTED:
-		break;
-	}
-}
-
-static struct a2dp_channel *channel_new(struct a2dp_server *server,
-					struct btd_device *device,
-					GIOChannel *io)
-{
-	struct a2dp_channel *chan;
-
-	chan = g_new0(struct a2dp_channel, 1);
-	chan->server = server;
-	chan->device = device;
-	chan->state_id = avdtp_add_state_cb(device, avdtp_state_cb, chan);
-
-	if (!queue_push_tail(server->channels, chan)) {
-		g_free(chan);
-		return NULL;
-	}
-
-	if (!io)
-		return chan;
-
-	chan->io = g_io_channel_ref(io);
-	chan->io_id = g_io_add_watch(io, G_IO_ERR | G_IO_HUP | G_IO_NVAL,
-					(GIOFunc) disconnect_cb, chan);
-
-	return chan;
-}
-
-static bool match_by_device(const void *data, const void *user_data)
-{
-	const struct a2dp_channel *chan = data;
-	const struct btd_device *device = user_data;
-
-	return chan->device == device;
-}
-
-struct avdtp *a2dp_avdtp_get(struct btd_device *device)
-{
-	struct a2dp_server *server;
-	struct a2dp_channel *chan;
-
-	server = find_server(servers, device_get_adapter(device));
-	if (server == NULL)
-		return NULL;
-
-	chan = queue_find(server->channels, match_by_device, device);
-	if (!chan) {
-		chan = channel_new(server, device, NULL);
-		if (!chan)
-			return NULL;
-	}
-
-	if (chan->session)
-		return avdtp_ref(chan->session);
-
-	chan->session = avdtp_new(NULL, device, server->seps);
-	if (!chan->session) {
-		channel_remove(chan);
-		return NULL;
-	}
-
-	return avdtp_ref(chan->session);
-}
-
-static void connect_cb(GIOChannel *io, GError *err, gpointer user_data)
-{
-	struct a2dp_channel *chan = user_data;
-
-	if (err) {
-		error("%s", err->message);
-		goto fail;
-	}
-
-	chan->session = avdtp_new(chan->io, chan->device, chan->server->seps);
-	if (!chan->session) {
-		error("Unable to create AVDTP session");
-		goto fail;
-	}
-
-	g_io_channel_unref(chan->io);
-	chan->io = NULL;
-
-	g_source_remove(chan->io_id);
-	chan->io_id = 0;
-
-	return;
-
-fail:
-	channel_remove(chan);
-}
-
-static void auth_cb(DBusError *derr, void *user_data)
-{
-	struct a2dp_channel *chan = user_data;
-	GError *err = NULL;
-
-	chan->auth_id = 0;
-
-	if (derr && dbus_error_is_set(derr)) {
-		error("Access denied: %s", derr->message);
-		goto fail;
-	}
-
-	if (!bt_io_accept(chan->io, connect_cb, chan, NULL, &err)) {
-		error("bt_io_accept: %s", err->message);
-		g_error_free(err);
-		goto fail;
-	}
-
-	return;
-
-fail:
-	channel_remove(chan);
-}
-
-static void transport_cb(GIOChannel *io, GError *err, gpointer user_data)
-{
-	struct a2dp_setup *setup = user_data;
-	uint16_t omtu, imtu;
-
-	if (err) {
-		error("%s", err->message);
-		goto drop;
-	}
-
-	bt_io_get(io, &err, BT_IO_OPT_OMTU, &omtu, BT_IO_OPT_IMTU, &imtu,
-							BT_IO_OPT_INVALID);
-	if (err) {
-		error("%s", err->message);
-		g_error_free(err);
-		goto drop;
-	}
-
-	if (!avdtp_stream_set_transport(setup->stream,
-					g_io_channel_unix_get_fd(io),
-					imtu, omtu))
-		goto drop;
-
-	g_io_channel_set_close_on_unref(io, FALSE);
-
-	setup_unref(setup);
-
-	return;
-
-drop:
-	setup_unref(setup);
-	g_io_channel_shutdown(io, TRUE, NULL);
-
-}
-static void confirm_cb(GIOChannel *io, gpointer data)
-{
-	struct a2dp_server *server = data;
-	struct a2dp_channel *chan;
-	char address[18];
-	bdaddr_t src, dst;
-	GError *err = NULL;
-	struct btd_device *device;
-
-	bt_io_get(io, &err,
-			BT_IO_OPT_SOURCE_BDADDR, &src,
-			BT_IO_OPT_DEST_BDADDR, &dst,
-			BT_IO_OPT_DEST, address,
-			BT_IO_OPT_INVALID);
-	if (err) {
-		error("%s", err->message);
-		g_error_free(err);
-		goto drop;
-	}
-
-	DBG("AVDTP: incoming connect from %s", address);
-
-	device = btd_adapter_find_device(adapter_find(&src), &dst,
-								BDADDR_BREDR);
-	if (!device)
-		goto drop;
-
-	chan = queue_find(server->channels, match_by_device, device);
-	if (chan) {
-		struct a2dp_setup *setup;
-
-		setup = find_setup_by_session(chan->session);
-		if (!setup || !setup->stream)
-			goto drop;
-
-		if (!bt_io_accept(io, transport_cb, setup, NULL, &err)) {
-			error("bt_io_accept: %s", err->message);
-			g_error_free(err);
-			goto drop;
-		}
-
-		return;
-	}
-
-	chan = channel_new(server, device, io);
-	if (!chan)
-		goto drop;
-
-	chan->auth_id = btd_request_authorization(&src, &dst,
-							ADVANCED_AUDIO_UUID,
-							auth_cb, chan);
-	if (chan->auth_id == 0 && !chan->session)
-		channel_remove(chan);
-
-	return;
-
-drop:
-	g_io_channel_shutdown(io, TRUE, NULL);
-}
-
-static bool a2dp_server_listen(struct a2dp_server *server)
-{
-	GError *err = NULL;
-
-	if (server->io)
-		return true;
-
-	server->io = bt_io_listen(NULL, confirm_cb, server, NULL, &err,
-				BT_IO_OPT_SOURCE_BDADDR,
-				btd_adapter_get_address(server->adapter),
-				BT_IO_OPT_PSM, AVDTP_PSM,
-				BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
-				BT_IO_OPT_MASTER, true,
-				BT_IO_OPT_INVALID);
-	if (server->io)
-		return true;
-
-	error("%s", err->message);
-	g_error_free(err);
-
-	return false;
-}
-
 static struct a2dp_server *a2dp_server_register(struct btd_adapter *adapter)
 {
 	struct a2dp_server *server;
 
 	server = g_new0(struct a2dp_server, 1);
-
 	server->adapter = btd_adapter_ref(adapter);
-	server->seps = queue_new();
-	server->channels = queue_new();
-
 	servers = g_slist_append(servers, server);
 
 	return server;
@@ -1602,38 +1197,18 @@ static struct a2dp_server *a2dp_server_register(struct btd_adapter *adapter)
 
 static void a2dp_unregister_sep(struct a2dp_sep *sep)
 {
-	struct a2dp_server *server = sep->server;
-
 	if (sep->destroy) {
 		sep->destroy(sep->user_data);
 		sep->endpoint = NULL;
 	}
 
-	avdtp_unregister_sep(server->seps, sep->lsep);
-
+	avdtp_unregister_sep(sep->lsep);
 	g_free(sep);
-
-	if (!queue_isempty(server->seps))
-		return;
-
-	if (server->io) {
-		g_io_channel_shutdown(server->io, TRUE, NULL);
-		g_io_channel_unref(server->io);
-		server->io = NULL;
-	}
 }
 
 static void a2dp_server_unregister(struct a2dp_server *server)
 {
 	servers = g_slist_remove(servers, server);
-	queue_destroy(server->channels, channel_free);
-	queue_destroy(server->seps, NULL);
-
-	if (server->io) {
-		g_io_channel_shutdown(server->io, TRUE, NULL);
-		g_io_channel_unref(server->io);
-	}
-
 	btd_adapter_unref(server->adapter);
 	g_free(server);
 }
@@ -1671,7 +1246,7 @@ struct a2dp_sep *a2dp_add_sep(struct btd_adapter *adapter, uint8_t type,
 
 	sep = g_new0(struct a2dp_sep, 1);
 
-	sep->lsep = avdtp_register_sep(server->seps, type,
+	sep->lsep = avdtp_register_sep(adapter, type,
 					AVDTP_MEDIA_TYPE_AUDIO, codec,
 					delay_reporting, &endpoint_ind,
 					&cfm, sep);
@@ -1705,7 +1280,8 @@ struct a2dp_sep *a2dp_add_sep(struct btd_adapter *adapter, uint8_t type,
 	record = a2dp_record(type);
 	if (!record) {
 		error("Unable to allocate new service record");
-		a2dp_unregister_sep(sep);
+		avdtp_unregister_sep(sep->lsep);
+		g_free(sep);
 		if (err)
 			*err = -EINVAL;
 		return NULL;
@@ -1714,20 +1290,12 @@ struct a2dp_sep *a2dp_add_sep(struct btd_adapter *adapter, uint8_t type,
 	if (adapter_service_add(server->adapter, record) < 0) {
 		error("Unable to register A2DP service record");
 		sdp_record_free(record);
-		a2dp_unregister_sep(sep);
+		avdtp_unregister_sep(sep->lsep);
+		g_free(sep);
 		if (err)
 			*err = -EINVAL;
 		return NULL;
 	}
-
-	if (!a2dp_server_listen(server)) {
-		sdp_record_free(record);
-		a2dp_unregister_sep(sep);
-		if (err)
-			*err = -EINVAL;
-		return NULL;
-	}
-
 	*record_id = record->handle;
 
 add:
@@ -1796,7 +1364,42 @@ static void select_cb(struct a2dp_setup *setup, void *ret, int size)
 
 done:
 	finalize_select(setup);
-	setup_unref(setup);
+}
+
+static gboolean check_vendor_codec(struct a2dp_sep *sep, uint8_t *cap,
+								size_t len)
+{
+	uint8_t *capabilities;
+	size_t length;
+	a2dp_vendor_codec_t *local_codec;
+	a2dp_vendor_codec_t *remote_codec;
+
+	if (len < sizeof(a2dp_vendor_codec_t))
+		return FALSE;
+
+	remote_codec = (a2dp_vendor_codec_t *) cap;
+
+	if (sep->endpoint == NULL)
+		return FALSE;
+
+	length = sep->endpoint->get_capabilities(sep,
+				&capabilities, sep->user_data);
+
+	if (length < sizeof(a2dp_vendor_codec_t))
+		return FALSE;
+
+	local_codec = (a2dp_vendor_codec_t *) capabilities;
+
+	if (btohl(remote_codec->vendor_id) != btohl(local_codec->vendor_id))
+		return FALSE;
+
+	if (btohs(remote_codec->codec_id) != btohs(local_codec->codec_id))
+		return FALSE;
+
+	DBG("vendor 0x%08x codec 0x%04x", btohl(remote_codec->vendor_id),
+						btohs(remote_codec->codec_id));
+
+	return TRUE;
 }
 
 static struct a2dp_sep *a2dp_find_sep(struct avdtp *session, GSList *list,
@@ -1804,6 +1407,9 @@ static struct a2dp_sep *a2dp_find_sep(struct avdtp *session, GSList *list,
 {
 	for (; list; list = list->next) {
 		struct a2dp_sep *sep = list->data;
+		struct avdtp_remote_sep *rsep;
+		struct avdtp_media_codec_capability *cap;
+		struct avdtp_service_capability *service;
 
 		/* Use sender's endpoint if available */
 		if (sender) {
@@ -1817,11 +1423,19 @@ static struct a2dp_sep *a2dp_find_sep(struct avdtp *session, GSList *list,
 				continue;
 		}
 
-		if (avdtp_find_remote_sep(session, sep->lsep) == NULL)
+		rsep = avdtp_find_remote_sep(session, sep->lsep);
+		if (rsep == NULL)
 			continue;
 
-		return sep;
+		service = avdtp_get_codec(rsep);
+		cap = (struct avdtp_media_codec_capability *) service->data;
 
+		if (cap->media_codec_type != A2DP_CODEC_VENDOR)
+			return sep;
+
+		if (check_vendor_codec(sep, cap->data,
+					service->length - sizeof(*cap)))
+			return sep;
 	}
 
 	return NULL;
@@ -1846,40 +1460,6 @@ static struct a2dp_sep *a2dp_select_sep(struct avdtp *session, uint8_t type,
 		return sep;
 
 	return a2dp_find_sep(session, l, NULL);
-}
-
-static void discover_cb(struct avdtp *session, GSList *seps,
-				struct avdtp_error *err, void *user_data)
-{
-	struct a2dp_setup *setup = user_data;
-
-	DBG("err %p", err);
-
-	setup->seps = seps;
-	setup->err = err;
-
-	finalize_discover(setup);
-}
-
-unsigned int a2dp_discover(struct avdtp *session, a2dp_discover_cb_t cb,
-							void *user_data)
-{
-	struct a2dp_setup *setup;
-	struct a2dp_setup_cb *cb_data;
-
-	setup = a2dp_setup_get(session);
-	if (!setup)
-		return 0;
-
-	cb_data = setup_cb_new(setup);
-	cb_data->discover_cb = cb;
-	cb_data->user_data = user_data;
-
-	if (avdtp_discover(session, discover_cb, setup) == 0)
-		return cb_data->id;
-
-	setup_cb_free(cb_data);
-	return 0;
 }
 
 unsigned int a2dp_select_capabilities(struct avdtp *session,
@@ -1921,12 +1501,10 @@ unsigned int a2dp_select_capabilities(struct avdtp *session,
 
 	err = sep->endpoint->select_configuration(sep, codec->data,
 					service->length - sizeof(*codec),
-					setup_ref(setup),
+					setup,
 					select_cb, sep->user_data);
 	if (err == 0)
 		return cb_data->id;
-
-	setup_unref(setup);
 
 fail:
 	setup_cb_free(cb_data);
@@ -2039,9 +1617,6 @@ unsigned int a2dp_config(struct avdtp *session, struct a2dp_sep *sep,
 			}
 		}
 		break;
-	case AVDTP_STATE_CONFIGURED:
-	case AVDTP_STATE_CLOSING:
-	case AVDTP_STATE_ABORTING:
 	default:
 		error("SEP in bad state for requesting a new stream");
 		goto failed;
@@ -2098,8 +1673,6 @@ unsigned int a2dp_resume(struct avdtp *session, struct a2dp_sep *sep,
 			cb_data->source_id = g_idle_add(finalize_resume,
 								setup);
 		break;
-	case AVDTP_STATE_CLOSING:
-	case AVDTP_STATE_ABORTING:
 	default:
 		error("SEP in bad state for resume");
 		goto failed;
@@ -2144,9 +1717,6 @@ unsigned int a2dp_suspend(struct avdtp *session, struct a2dp_sep *sep,
 		}
 		sep->suspending = TRUE;
 		break;
-	case AVDTP_STATE_CONFIGURED:
-	case AVDTP_STATE_CLOSING:
-	case AVDTP_STATE_ABORTING:
 	default:
 		error("SEP in bad state for suspend");
 		goto failed;
@@ -2177,8 +1747,8 @@ gboolean a2dp_cancel(unsigned int id)
 
 			if (!setup->cb) {
 				DBG("aborting setup %p", setup);
-				if (!avdtp_abort(setup->session, setup->stream))
-					return TRUE;
+				avdtp_abort(setup->session, setup->stream);
+				return TRUE;
 			}
 
 			setup_unref(setup);
@@ -2234,10 +1804,6 @@ gboolean a2dp_sep_unlock(struct a2dp_sep *sep, struct avdtp *session)
 		if (avdtp_suspend(session, sep->stream) == 0)
 			sep->suspending = TRUE;
 		break;
-	case AVDTP_STATE_IDLE:
-	case AVDTP_STATE_CONFIGURED:
-	case AVDTP_STATE_CLOSING:
-	case AVDTP_STATE_ABORTING:
 	default:
 		break;
 	}
